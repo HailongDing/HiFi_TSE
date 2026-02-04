@@ -128,7 +128,8 @@ def main():
     # Inference
     if args.chunk_seconds > 0:
         chunk_samples = int(args.chunk_seconds * sr)
-        hop_samples = int(chunk_samples * (1.0 - args.overlap))
+        overlap = max(0.0, min(args.overlap, 0.99))
+        hop_samples = max(1, int(chunk_samples * (1.0 - overlap)))
         print("Chunked inference: {:.1f}s chunks, {:.1f}s hop".format(
             chunk_samples / sr, hop_samples / sr))
         est_wav = inference_chunked(generator, mix_wav, ref_wav, device,

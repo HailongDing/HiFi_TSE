@@ -358,9 +358,12 @@ class HiFiTSEDataset(Dataset):
             mix_wav = _mix_at_snr_np(speech_sum, noise_wav, snr_db)
         else:
             # Target absent: no target in mixture
-            speech_sum = sum(interferers_reverbed)
-            if np.abs(speech_sum).max() < 1e-8:
-                speech_sum = interferers_reverbed[0]  # fallback
+            if len(interferers_reverbed) == 0:
+                speech_sum = np.zeros(mix_seg, dtype=np.float32)
+            else:
+                speech_sum = sum(interferers_reverbed)
+                if np.abs(speech_sum).max() < 1e-8:
+                    speech_sum = interferers_reverbed[0]  # fallback
             mix_wav = _mix_at_snr_np(speech_sum, noise_wav, snr_db)
             target_wav = np.zeros(mix_seg, dtype=np.float32)
 

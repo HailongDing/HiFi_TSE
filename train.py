@@ -119,7 +119,9 @@ def main():
                   betas=tuple(train_cfg["betas"]))
     total_steps = train_cfg["total_steps"]
     sched_G = CosineAnnealingLR(opt_G, T_max=total_steps)
-    sched_D = CosineAnnealingLR(opt_D, T_max=total_steps)
+    # D scheduler covers GAN-phase steps only (phase2_steps .. total_steps)
+    gan_steps = total_steps - cfg["curriculum"]["phase2_steps"]
+    sched_D = CosineAnnealingLR(opt_D, T_max=gan_steps)
 
     # ---- Losses ----
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
@@ -221,24 +223,32 @@ def main():
         loss_fm_val = 0.0
 
         if current_phase >= 3:
-            # Update D
-            est_wav_detach = est_wav.detach()
-            d_real_out, d_real_feat = discriminator(target_wav)
-            d_fake_out, d_fake_feat = discriminator(est_wav_detach)
-            loss_D = discriminator_loss(d_real_out, d_fake_out)
-            (loss_D / grad_accum).backward()
-            loss_D_val = loss_D.item()
+            # Only use TP samples for discriminator training
+            tp_mask = tp_flag.bool()
 
-            # G adversarial + feature matching
-            # Detach real features: they are fixed targets, and their graph
-            # was already freed by loss_D.backward() above.
-            d_real_feat_det = [[f.detach() for f in feats] for feats in d_real_feat]
-            d_fake_out_g, d_fake_feat_g = discriminator(est_wav)
-            loss_adv = generator_adv_loss(d_fake_out_g)
-            loss_fm = feature_matching_loss(d_real_feat_det, d_fake_feat_g)
-            loss_G = loss_G + loss_w["lambda_adv"] * loss_adv + loss_w["lambda_fm"] * loss_fm
-            loss_adv_val = loss_adv.item()
-            loss_fm_val = loss_fm.item()
+            if tp_mask.any():
+                # Update D (on TP samples only)
+                est_wav_detach = est_wav.detach()
+                d_real_out, d_real_feat = discriminator(target_wav[tp_mask])
+                d_fake_out, d_fake_feat = discriminator(est_wav_detach[tp_mask])
+                loss_D = discriminator_loss(d_real_out, d_fake_out)
+                (loss_D / grad_accum).backward()
+                loss_D_val = loss_D.item()
+
+                # Freeze D during G adversarial forward to prevent
+                # G loss gradients from contaminating D parameters
+                discriminator.requires_grad_(False)
+                d_real_feat_det = [[f.detach() for f in feats]
+                                   for feats in d_real_feat]
+                d_fake_out_g, d_fake_feat_g = discriminator(est_wav)
+                loss_adv = generator_adv_loss(d_fake_out_g)
+                loss_fm = feature_matching_loss(d_real_feat_det, d_fake_feat_g)
+                loss_G = loss_G + loss_w["lambda_adv"] * loss_adv \
+                    + loss_w["lambda_fm"] * loss_fm
+                loss_adv_val = loss_adv.item()
+                loss_fm_val = loss_fm.item()
+                discriminator.requires_grad_(True)
+            # else: entire batch is TA, skip GAN losses for this step
 
         # ---- Backward G ----
         (loss_G / grad_accum).backward()
@@ -255,7 +265,8 @@ def main():
                 opt_D.zero_grad()
 
             sched_G.step()
-            sched_D.step()
+            if current_phase >= 3:
+                sched_D.step()
 
         dt = time.time() - t0
 

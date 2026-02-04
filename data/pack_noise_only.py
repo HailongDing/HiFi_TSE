@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml
 from data.prepare_manifest import (
-    pack_noise_hdf5, scan_noise_dir, scan_audioset_filtered,
+    pack_noise_hdf5_single, scan_noise_dir, scan_audioset_filtered,
 )
 
 with open("configs/hifi_tse.yaml") as f:
@@ -20,14 +20,14 @@ with open("configs/hifi_tse.yaml") as f:
 
 hdf5_dir = cfg["data"]["hdf5_dir"]
 manifest_dir = os.path.join(hdf5_dir, "manifests")
-noise_paths = cfg["data"]["noise"]
+noise_cfg = cfg["data"]["noise"]
 
 # Rebuild noise manifest with AudioSet filtering
 print("Scanning noise sources (with AudioSet filtering)...")
 noise_sources = {}
-noise_sources["demand"] = scan_noise_dir(noise_paths[0], "DEMAND")
-noise_sources["wham"] = scan_noise_dir(noise_paths[1], "WHAM")
-noise_sources["audioset"] = scan_audioset_filtered(noise_paths[2])
+noise_sources["demand"] = scan_noise_dir(noise_cfg["demand"], "DEMAND")
+noise_sources["wham"] = scan_noise_dir(noise_cfg["wham"], "WHAM")
+noise_sources["audioset"] = scan_audioset_filtered(noise_cfg["audioset"])
 
 total_noise = sum(len(v) for v in noise_sources.values())
 print(f"Total noise files (filtered): {total_noise}")
@@ -37,13 +37,14 @@ with open(noise_manifest_path, "w") as f:
     json.dump(noise_sources, f, indent=0)
 print(f"Saved: {noise_manifest_path}")
 
-# Remove incomplete file if exists
-noise_h5 = os.path.join(hdf5_dir, "noise", "noise.h5")
-if os.path.exists(noise_h5):
-    os.remove(noise_h5)
-    print(f"Removed incomplete: {noise_h5}")
-
 print("\n--- Packing Noise HDF5 ---")
-pack_noise_hdf5(noise_sources, noise_h5)
+noise_out = os.path.join(hdf5_dir, "train", "noise")
+for source_name, file_list in noise_sources.items():
+    out_path = os.path.join(noise_out, f"{source_name}.h5")
+    # Remove incomplete file if exists
+    if os.path.exists(out_path):
+        os.remove(out_path)
+        print(f"Removed incomplete: {out_path}")
+    pack_noise_hdf5_single(file_list, out_path, source_name)
 
 print("\nNoise packing complete! Review RIR list before proceeding.")
