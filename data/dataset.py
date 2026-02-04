@@ -6,7 +6,7 @@ Reads per-utterance HDF5 files and performs on-the-fly mixing:
   - RIR convolution for reverb simulation
   - Noise mixing at random SNR
   - Target-absent (TA) samples at configurable ratio
-  - Variable-length segments (4-6s), cropped per-batch via collate_fn
+  - Fixed-length segments (default 4s), all samples same size per batch
 
 HDF5 layout (produced by data/prepare_manifest.py):
   clean_speech/{dns4,ears,vctk}.h5:
@@ -234,24 +234,20 @@ class RIRIndex:
 
 
 # ---------------------------------------------------------------------------
-# Collate function for variable-length batches
+# Collate function
 # ---------------------------------------------------------------------------
 
 def tse_collate_fn(batch):
-    """Collate variable-length samples by cropping to batch minimum.
+    """Stack fixed-length samples into a batch.
 
-    Each sample is (mix_wav, ref_wav, target_wav, tp_flag) where mix and ref
-    lengths may differ across items.  We crop mix+target to the shortest mix
-    in the batch, and ref to the shortest ref.  No padding is used.
+    All samples have identical mix and ref lengths (fixed segment config),
+    so this is a straightforward stack.
     """
     mix_wavs, ref_wavs, target_wavs, tp_flags = zip(*batch)
 
-    min_mix_len = min(m.shape[0] for m in mix_wavs)
-    min_ref_len = min(r.shape[0] for r in ref_wavs)
-
-    mix_batch = torch.stack([m[:min_mix_len] for m in mix_wavs])
-    ref_batch = torch.stack([r[:min_ref_len] for r in ref_wavs])
-    target_batch = torch.stack([t[:min_mix_len] for t in target_wavs])
+    mix_batch = torch.stack(mix_wavs)
+    ref_batch = torch.stack(ref_wavs)
+    target_batch = torch.stack(target_wavs)
     tp_batch = torch.stack(list(tp_flags))
 
     return mix_batch, ref_batch, target_batch, tp_batch
@@ -264,10 +260,9 @@ def tse_collate_fn(batch):
 class HiFiTSEDataset(Dataset):
     """Dynamic mixing dataset for HiFi-TSE training.
 
-    Each __getitem__ constructs a fresh mixture on the fly with a randomly
-    sampled segment length from the configured range.  Use tse_collate_fn
-    with the DataLoader to crop all items in a batch to the batch minimum
-    length (no padding needed).
+    Each __getitem__ constructs a fresh mixture on the fly using fixed
+    segment lengths.  All samples in a batch have identical tensor shapes,
+    so tse_collate_fn is a simple torch.stack.
     """
 
     def __init__(self, cfg, phase=1):
@@ -275,17 +270,9 @@ class HiFiTSEDataset(Dataset):
         hdf5_dir = data_cfg["hdf5_dir"]
         audio_cfg = cfg["audio"]
 
-        # Variable segment ranges (in samples)
-        mix_range = audio_cfg["mix_segment_range"]
-        ref_range = audio_cfg["ref_segment_range"]
-        self.mix_seg_range = (
-            int(mix_range[0] * SAMPLE_RATE),
-            int(mix_range[1] * SAMPLE_RATE),
-        )
-        self.ref_seg_range = (
-            int(ref_range[0] * SAMPLE_RATE),
-            int(ref_range[1] * SAMPLE_RATE),
-        )
+        # Fixed segment lengths (in samples)
+        self.mix_seg = int(audio_cfg["mix_segment_seconds"] * SAMPLE_RATE)
+        self.ref_seg = int(audio_cfg["ref_segment_seconds"] * SAMPLE_RATE)
 
         self.ta_ratio = data_cfg["ta_ratio"]
         self.noisy_ref_prob = data_cfg["noisy_ref_prob"]
@@ -308,14 +295,13 @@ class HiFiTSEDataset(Dataset):
     def __getitem__(self, idx):
         """
         Returns:
-            mix_wav:  (mix_seg,) float32 tensor  (length varies per item)
-            ref_wav:  (ref_seg,) float32 tensor  (length varies per item)
+            mix_wav:  (mix_seg,) float32 tensor
+            ref_wav:  (ref_seg,) float32 tensor
             target_wav: (mix_seg,) float32 tensor (zeros if TA)
             target_present: float scalar, 1.0 for TP, 0.0 for TA
         """
-        # Sample random segment lengths for this item
-        mix_seg = random.randint(*self.mix_seg_range)
-        ref_seg = random.randint(*self.ref_seg_range)
+        mix_seg = self.mix_seg
+        ref_seg = self.ref_seg
 
         # 1. Pick target speaker and utterance
         spk_id, utt_idx = self.clean_index.flat_index[idx]

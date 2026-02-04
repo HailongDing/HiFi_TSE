@@ -3,9 +3,9 @@
 
 audio:
   sample_rate: 48000
-  mix_segment_range: [4.0, 5.0]   # seconds, sampled per batch
-  ref_segment_range: [4.0, 5.0]   # seconds, sampled per batch (independent)
-  min_utterance_length: 3.0       # skip utterances shorter than this during packing
+  mix_segment_seconds: 4.0        # fixed segment length for mixtures
+  ref_segment_seconds: 4.0        # fixed segment length for references
+  min_utterance_length: 4.0       # skip utterances shorter than this during packing
 
 stft:
   n_fft: 2048
