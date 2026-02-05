@@ -10,8 +10,10 @@ Phase 3 (300k+ steps):       Enable GAN (adversarial + feature matching)
 """
 
 import argparse
+import gc
 import math
 import os
+import resource
 import time
 
 import torch
@@ -197,11 +199,17 @@ def main():
     if start_step >= phase2_steps:
         current_phase = 3
         train_dataset.set_phase(3)
+        train_dataset.close_handles()
+        del train_iter, train_loader
+        gc.collect()
         train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
         train_iter = infinite_loader(train_loader)
     elif start_step >= phase1_steps:
         current_phase = 2
         train_dataset.set_phase(2)
+        train_dataset.close_handles()
+        del train_iter, train_loader
+        gc.collect()
         train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
         train_iter = infinite_loader(train_loader)
 
@@ -218,12 +226,18 @@ def main():
         if step == phase1_steps and current_phase < 2:
             current_phase = 2
             train_dataset.set_phase(2)
+            train_dataset.close_handles()
+            del train_iter, train_loader
+            gc.collect()
             train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
             train_iter = infinite_loader(train_loader)
             print("==> Phase 2: enabling TA data + energy loss (step {})".format(step))
         elif step == phase2_steps and current_phase < 3:
             current_phase = 3
             train_dataset.set_phase(3)
+            train_dataset.close_handles()
+            del train_iter, train_loader
+            gc.collect()
             train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
             train_iter = infinite_loader(train_loader)
             print("==> Phase 3: enabling GAN losses (step {})".format(step))
@@ -309,10 +323,13 @@ def main():
 
         # ---- Logging ----
         if step % log_interval == 0:
+            rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             print("step {:>7d} | phase {} | loss_G {:.4f} | sep {:.4f} | stft {:.4f}"
-                  " | adv {:.4f} | fm {:.4f} | D {:.4f} | {:.2f}s".format(
+                  " | adv {:.4f} | fm {:.4f} | D {:.4f} | rss {:.0f}MB"
+                  " | {:.2f}s".format(
                       step, current_phase, loss_G.item(), loss_sep.item(),
-                      loss_stft.item(), loss_adv_val, loss_fm_val, loss_D_val, dt))
+                      loss_stft.item(), loss_adv_val, loss_fm_val, loss_D_val,
+                      rss_mb, dt))
             writer.add_scalar("train/loss_G", loss_G.item(), step)
             writer.add_scalar("train/loss_sep", loss_sep.item(), step)
             writer.add_scalar("train/loss_stft", loss_stft.item(), step)

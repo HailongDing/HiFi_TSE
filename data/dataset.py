@@ -134,7 +134,7 @@ class CleanSpeechIndex:
 
     def _get_handle(self, path):
         if path not in self._handles:
-            self._handles[path] = h5py.File(path, "r")
+            self._handles[path] = h5py.File(path, "r", rdcc_nbytes=512*1024)
         return self._handles[path]
 
     def get_utterance(self, speaker_id, utt_idx):
@@ -191,7 +191,7 @@ class NoiseIndex:
 
     def _get_handle(self, path):
         if path not in self._handles:
-            self._handles[path] = h5py.File(path, "r")
+            self._handles[path] = h5py.File(path, "r", rdcc_nbytes=512*1024)
         return self._handles[path]
 
     def get_random(self):
@@ -226,7 +226,7 @@ class RIRIndex:
 
     def _get_handle(self):
         if self._handle is None:
-            self._handle = h5py.File(self.h5_path, "r")
+            self._handle = h5py.File(self.h5_path, "r", rdcc_nbytes=512*1024)
         return self._handle
 
     def get_random(self):
@@ -296,6 +296,12 @@ class HiFiTSEDataset(Dataset):
     def set_phase(self, phase):
         """Update training phase (controls TA ratio)."""
         self.phase = phase
+
+    def close_handles(self):
+        """Close all HDF5 file handles to free memory."""
+        self.clean_index.close()
+        self.noise_index.close()
+        self.rir_index.close()
 
     def __len__(self):
         return self.clean_index.num_utterances()
