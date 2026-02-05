@@ -79,31 +79,68 @@ class GridNetBlock(nn.Module):
         return x
 
 
+class SpeakerReinjectLayer(nn.Module):
+    """Lightweight cross-attention for re-injecting speaker info."""
+
+    def __init__(self, feature_dim, num_heads):
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=feature_dim, num_heads=num_heads, batch_first=True,
+        )
+        self.norm = nn.LayerNorm(feature_dim)
+
+    def forward(self, x, z_ref):
+        """
+        Args:
+            x: (B, T, N, D)
+            z_ref: (B, T_ref, N, D)
+        Returns:
+            (B, T, N, D)
+        """
+        B, T, N, D = x.shape
+        T_ref = z_ref.shape[1]
+        q = x.permute(0, 2, 1, 3).reshape(B * N, T, D)
+        kv = z_ref.permute(0, 2, 1, 3).reshape(B * N, T_ref, D)
+        attn_out, _ = self.cross_attn(q, kv, kv)
+        out = self.norm(q + attn_out)
+        return out.reshape(B, N, T, D).permute(0, 2, 1, 3)
+
+
 class TFGridNet(nn.Module):
     """Stack of GridNet blocks forming the TF-GridNet backbone."""
 
-    def __init__(self, feature_dim, lstm_hidden, num_heads, num_blocks):
+    def __init__(self, feature_dim, lstm_hidden, num_heads, num_blocks,
+                 reinject_at=None):
         """
         Args:
             feature_dim: feature dimension (128)
             lstm_hidden: LSTM hidden size per direction (192)
             num_heads: attention heads (4)
             num_blocks: number of GridNet blocks (6)
+            reinject_at: list of block indices for speaker re-injection
         """
         super().__init__()
         self.blocks = nn.ModuleList([
             GridNetBlock(feature_dim, lstm_hidden, num_heads)
             for _ in range(num_blocks)
         ])
+        self.reinject_at = reinject_at or []
+        self.reinject_layers = nn.ModuleDict({
+            str(i): SpeakerReinjectLayer(feature_dim, num_heads)
+            for i in self.reinject_at
+        })
 
-    def forward(self, x):
+    def forward(self, x, z_ref=None):
         """
         Args:
             x: (B, T, N, D)
+            z_ref: (B, T_ref, N, D) optional speaker reference embedding
 
         Returns:
             (B, T, N, D)
         """
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
+            if z_ref is not None and i in self.reinject_at:
+                x = self.reinject_layers[str(i)](x, z_ref)
             x = block(x)
         return x

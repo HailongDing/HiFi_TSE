@@ -80,6 +80,14 @@ def _mix_at_snr_np(signal, noise, snr_db):
     return signal + scale * noise
 
 
+def _peak_normalize_np(wav, target_peak=0.9):
+    """Peak-normalize to target amplitude."""
+    peak = np.abs(wav).max()
+    if peak > 1e-8:
+        wav = wav * (target_peak / peak)
+    return wav
+
+
 # ---------------------------------------------------------------------------
 # HDF5 Index classes (lazy-open for multi-worker DataLoader safety)
 #
@@ -306,6 +314,7 @@ class HiFiTSEDataset(Dataset):
         # 1. Pick target speaker and utterance
         spk_id, utt_idx = self.clean_index.flat_index[idx]
         target_wav = self.clean_index.get_utterance(spk_id, utt_idx)
+        target_wav = _peak_normalize_np(target_wav)
         target_wav = _random_crop_np(target_wav, mix_seg)
 
         # 2. Decide TP or TA
@@ -323,6 +332,7 @@ class HiFiTSEDataset(Dataset):
                 exclude=exclude_speakers)
             exclude_speakers.add(int_spk)
             int_wav = self.clean_index.get_random_utterance(int_spk)
+            int_wav = _peak_normalize_np(int_wav)
             int_wav = _random_crop_np(int_wav, mix_seg)
             interferer_wavs.append(int_wav)
 
@@ -356,6 +366,7 @@ class HiFiTSEDataset(Dataset):
         # 6. Reference: different utterance from same speaker
         ref_wav = self.clean_index.get_random_utterance(
             spk_id, exclude_idx=utt_idx)
+        ref_wav = _peak_normalize_np(ref_wav)
         ref_wav = _random_crop_np(ref_wav, ref_seg)
 
         # Optionally add noise/reverb to reference

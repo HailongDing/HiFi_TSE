@@ -43,7 +43,9 @@ class Generator(nn.Module):
         self.usef = USEFModule(feature_dim, num_heads)
 
         # TF-GridNet backbone
-        self.gridnet = TFGridNet(feature_dim, lstm_hidden, num_heads, num_blocks)
+        reinject_at = cfg['model'].get('reinject_at', [])
+        self.gridnet = TFGridNet(feature_dim, lstm_hidden, num_heads, num_blocks,
+                                  reinject_at=reinject_at)
 
         # Band-merge decoder
         self.decoder = BandMergeDecoder(
@@ -74,7 +76,7 @@ class Generator(nn.Module):
         z_cond = self.usef(z_mix, z_ref)  # (B, T_mix, 53, D)
 
         # TF-GridNet backbone
-        z_out = self.gridnet(z_cond)  # (B, T_mix, 53, D)
+        z_out = self.gridnet(z_cond, z_ref=z_ref)  # (B, T_mix, 53, D)
 
         # Band-merge decode to waveform
         est_wav = self.decoder(z_out, mix_spec, length=length)

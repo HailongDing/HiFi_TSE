@@ -77,6 +77,7 @@ model:
   num_gridnet_blocks: 6
   lstm_hidden: 192
   num_heads: 4
+  reinject_at: [0, 2, 4]
 
 discriminator:
   mpd_periods: [2, 3, 5, 7, 11]
@@ -95,6 +96,7 @@ training:
   betas: [0.8, 0.99]
   grad_clip: 5.0
   total_steps: 500000
+  warmup_steps: 2000    # optimizer steps (not micro-steps)
   log_interval: 100
   save_interval: 5000
   val_interval: 5000

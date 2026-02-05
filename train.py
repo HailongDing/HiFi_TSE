@@ -10,6 +10,7 @@ Phase 3 (300k+ steps):       Enable GAN (adversarial + feature matching)
 """
 
 import argparse
+import math
 import os
 import time
 
@@ -17,7 +18,6 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import yaml
@@ -41,6 +41,15 @@ def infinite_loader(loader):
             yield batch
 
 
+def make_train_loader(dataset, batch_size):
+    """Create a DataLoader for training (recreated at phase transitions)."""
+    return DataLoader(
+        dataset, batch_size=batch_size,
+        num_workers=4, pin_memory=True, shuffle=True, drop_last=True,
+        collate_fn=tse_collate_fn,
+    )
+
+
 def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G, sched_D):
     """Save training checkpoint."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -55,9 +64,9 @@ def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G,
     }, path)
 
 
-def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched_D):
+def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched_D, device):
     """Load training checkpoint. Returns the step number."""
-    ckpt = torch.load(path, map_location="cpu")
+    ckpt = torch.load(path, map_location=device)
     generator.load_state_dict(ckpt["generator"])
     discriminator.load_state_dict(ckpt["discriminator"])
     opt_G.load_state_dict(ckpt["opt_G"])
@@ -118,10 +127,28 @@ def main():
     opt_D = AdamW(discriminator.parameters(), lr=train_cfg["lr"],
                   betas=tuple(train_cfg["betas"]))
     total_steps = train_cfg["total_steps"]
-    sched_G = CosineAnnealingLR(opt_G, T_max=total_steps)
-    # D scheduler covers GAN-phase steps only (phase2_steps .. total_steps)
-    gan_steps = total_steps - cfg["curriculum"]["phase2_steps"]
-    sched_D = CosineAnnealingLR(opt_D, T_max=gan_steps)
+    grad_accum = train_cfg["grad_accum_steps"]
+    optimizer_steps = total_steps // grad_accum
+    warmup_steps = train_cfg.get("warmup_steps", 2000)  # optimizer steps
+
+    def warmup_cosine_lambda(current_step):
+        if current_step < warmup_steps:
+            return current_step / max(warmup_steps, 1)
+        progress = (current_step - warmup_steps) / max(optimizer_steps - warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    sched_G = torch.optim.lr_scheduler.LambdaLR(opt_G, lr_lambda=warmup_cosine_lambda)
+
+    # D scheduler: separate warmup for GAN phase
+    gan_optimizer_steps = (total_steps - cfg["curriculum"]["phase2_steps"]) // grad_accum
+
+    def warmup_cosine_lambda_d(current_step):
+        if current_step < warmup_steps:
+            return current_step / max(warmup_steps, 1)
+        progress = (current_step - warmup_steps) / max(gan_optimizer_steps - warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    sched_D = torch.optim.lr_scheduler.LambdaLR(opt_D, lr_lambda=warmup_cosine_lambda_d)
 
     # ---- Losses ----
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
@@ -129,11 +156,7 @@ def main():
 
     # ---- Data ----
     train_dataset = HiFiTSEDataset(cfg, phase=1)
-    train_loader = DataLoader(
-        train_dataset, batch_size=train_cfg["batch_size"],
-        num_workers=4, pin_memory=True, shuffle=True, drop_last=True,
-        collate_fn=tse_collate_fn,
-    )
+    train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
     train_iter = infinite_loader(train_loader)
 
     # Validation: reuse training dataset structure with a small subset
@@ -158,14 +181,13 @@ def main():
             print("Resuming from", resume_path)
             start_step = load_checkpoint(
                 resume_path, generator, discriminator,
-                opt_G, opt_D, sched_G, sched_D,
+                opt_G, opt_D, sched_G, sched_D, device,
             )
             print("Resumed at step", start_step)
 
     # ---- Curriculum config ----
     phase1_steps = cfg["curriculum"]["phase1_steps"]
     phase2_steps = cfg["curriculum"]["phase2_steps"]
-    grad_accum = train_cfg["grad_accum_steps"]
     grad_clip = train_cfg["grad_clip"]
     log_interval = train_cfg["log_interval"]
     save_interval = train_cfg["save_interval"]
@@ -175,9 +197,13 @@ def main():
     if start_step >= phase2_steps:
         current_phase = 3
         train_dataset.set_phase(3)
+        train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
+        train_iter = infinite_loader(train_loader)
     elif start_step >= phase1_steps:
         current_phase = 2
         train_dataset.set_phase(2)
+        train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
+        train_iter = infinite_loader(train_loader)
 
     print("Starting training from step {} (phase {})".format(start_step, current_phase))
 
@@ -192,10 +218,14 @@ def main():
         if step == phase1_steps and current_phase < 2:
             current_phase = 2
             train_dataset.set_phase(2)
+            train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
+            train_iter = infinite_loader(train_loader)
             print("==> Phase 2: enabling TA data + energy loss (step {})".format(step))
         elif step == phase2_steps and current_phase < 3:
             current_phase = 3
             train_dataset.set_phase(3)
+            train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
+            train_iter = infinite_loader(train_loader)
             print("==> Phase 3: enabling GAN losses (step {})".format(step))
 
         # Get batch
@@ -214,7 +244,14 @@ def main():
         else:
             loss_sep = scene_aware_loss(est_wav, target_wav, tp_flag)
 
-        loss_stft = stft_loss_fn(est_wav, target_wav)
+        if current_phase == 1:
+            loss_stft = stft_loss_fn(est_wav, target_wav)
+        else:
+            tp_mask_stft = tp_flag.bool()
+            if tp_mask_stft.any():
+                loss_stft = stft_loss_fn(est_wav[tp_mask_stft], target_wav[tp_mask_stft])
+            else:
+                loss_stft = torch.tensor(0.0, device=device)
         loss_G = loss_w["lambda_sep"] * loss_sep + loss_w["lambda_stft"] * loss_stft
 
         # ---- GAN losses (phase 3 only) ----
@@ -240,7 +277,7 @@ def main():
                 discriminator.requires_grad_(False)
                 d_real_feat_det = [[f.detach() for f in feats]
                                    for feats in d_real_feat]
-                d_fake_out_g, d_fake_feat_g = discriminator(est_wav)
+                d_fake_out_g, d_fake_feat_g = discriminator(est_wav[tp_mask])
                 loss_adv = generator_adv_loss(d_fake_out_g)
                 loss_fm = feature_matching_loss(d_real_feat_det, d_fake_feat_g)
                 loss_G = loss_G + loss_w["lambda_adv"] * loss_adv \
