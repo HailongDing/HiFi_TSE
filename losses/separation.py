@@ -57,13 +57,17 @@ def energy_loss(estimate, eps=1e-8):
     return 10.0 * torch.log10(energy + eps)
 
 
-def scene_aware_loss(estimate, target, target_present):
+def scene_aware_loss(estimate, target, target_present, ta_weight=0.2):
     """Scene-aware loss dispatching SI-SDR for TP and energy for TA.
+
+    Uses explicit TP/TA weighting instead of equal averaging, so that TA
+    energy loss doesn't dominate over TP extraction quality.
 
     Args:
         estimate: (B, L) predicted waveform
         target: (B, L) ground truth waveform (zeros for TA samples)
         target_present: (B,) bool/float tensor, 1.0 for TP, 0.0 for TA
+        ta_weight: weight for TA energy loss (default 0.2, matching ta_ratio)
 
     Returns:
         scalar loss
@@ -72,19 +76,13 @@ def scene_aware_loss(estimate, target, target_present):
     ta_mask = ~tp_mask
 
     loss = torch.tensor(0.0, device=estimate.device)
-    count = 0
 
     if tp_mask.any():
         tp_loss = -si_sdr(estimate[tp_mask], target[tp_mask]).mean()
-        loss = loss + tp_loss
-        count += 1
+        loss = loss + (1.0 - ta_weight) * tp_loss
 
     if ta_mask.any():
         ta_loss = energy_loss(estimate[ta_mask]).mean()
-        loss = loss + ta_loss
-        count += 1
-
-    if count > 0:
-        loss = loss / count
+        loss = loss + ta_weight * ta_loss
 
     return loss

@@ -12,6 +12,7 @@ class SingleResolutionSTFTLoss(nn.Module):
         self.n_fft = n_fft
         self.win_length = win_length
         self.hop_length = hop_length
+        self.register_buffer('window', torch.hann_window(win_length))
 
     def forward(self, estimate, target):
         """
@@ -22,7 +23,7 @@ class SingleResolutionSTFTLoss(nn.Module):
         Returns:
             (spectral_convergence, log_magnitude_l1) tuple of scalars
         """
-        window = torch.hann_window(self.win_length, device=estimate.device)
+        window = self.window
 
         est_spec = torch.stft(
             estimate, self.n_fft, hop_length=self.hop_length,

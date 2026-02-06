@@ -30,6 +30,7 @@ import random
 import h5py
 import numpy as np
 import torch
+from scipy.signal import fftconvolve
 from torch.utils.data import Dataset
 
 
@@ -65,7 +66,6 @@ def _loop_to_length_np(wav, target_length):
 
 def _apply_rir_np(wav, rir):
     """Convolve waveform with RIR using numpy FFT convolution."""
-    from scipy.signal import fftconvolve
     rir = rir / (np.linalg.norm(rir) + 1e-8)
     out = fftconvolve(wav, rir, mode="full")
     return out[:len(wav)]

@@ -13,9 +13,11 @@ import argparse
 import gc
 import math
 import os
+import random
 import resource
 import time
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
@@ -43,18 +45,28 @@ def infinite_loader(loader):
             yield batch
 
 
+def _worker_init_fn(worker_id):
+    """Seed each DataLoader worker independently to avoid correlated augmentations."""
+    seed = torch.initial_seed() % 2**32 + worker_id
+    random.seed(seed)
+    np.random.seed(seed)
+
+
 def make_train_loader(dataset, batch_size):
     """Create a DataLoader for training (recreated at phase transitions)."""
     return DataLoader(
         dataset, batch_size=batch_size,
         num_workers=4, pin_memory=True, shuffle=True, drop_last=True,
         collate_fn=tse_collate_fn,
+        worker_init_fn=_worker_init_fn,
     )
 
 
-def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G, sched_D):
-    """Save training checkpoint."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G, sched_D,
+                    keep_last=5):
+    """Save training checkpoint and remove old ones beyond keep_last."""
+    ckpt_dir = os.path.dirname(path)
+    os.makedirs(ckpt_dir, exist_ok=True)
     torch.save({
         "step": step,
         "generator": generator.state_dict(),
@@ -64,6 +76,16 @@ def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G,
         "sched_G": sched_G.state_dict(),
         "sched_D": sched_D.state_dict(),
     }, path)
+
+    # Rotate: keep only the last N numbered checkpoints
+    numbered = sorted(
+        f for f in os.listdir(ckpt_dir)
+        if f.startswith("checkpoint_") and f.endswith(".pt") and f != "checkpoint_final.pt"
+    )
+    while len(numbered) > keep_last:
+        old = os.path.join(ckpt_dir, numbered.pop(0))
+        os.remove(old)
+        print("Removed old checkpoint:", old)
 
 
 def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched_D, device):

@@ -221,6 +221,7 @@ def generate_test_sample(target_wavs, interferer_pool, noise_files,
         speech_sum = target_reverbed + sum(interferers_reverbed)
         mix_wav = mix_at_snr(speech_sum, noise_wav, snr_db)
         clean_target = target_wav
+        reverbed_target = target_reverbed
     else:
         if len(interferers_reverbed) == 0:
             speech_sum = np.zeros(seg_samples, dtype=np.float32)
@@ -228,6 +229,7 @@ def generate_test_sample(target_wavs, interferer_pool, noise_files,
             speech_sum = sum(interferers_reverbed)
         mix_wav = mix_at_snr(speech_sum, noise_wav, snr_db)
         clean_target = np.zeros(seg_samples, dtype=np.float32)
+        reverbed_target = np.zeros(seg_samples, dtype=np.float32)
 
     # Normalize
     mix_max = np.abs(mix_wav).max()
@@ -235,8 +237,9 @@ def generate_test_sample(target_wavs, interferer_pool, noise_files,
         scale = 0.9 / mix_max
         mix_wav = mix_wav * scale
         clean_target = clean_target * scale
+        reverbed_target = reverbed_target * scale
 
-    return mix_wav, ref_wav, clean_target, {
+    return mix_wav, ref_wav, clean_target, reverbed_target, {
         "target_present": target_present,
         "snr_db": snr_db,
         "num_interferers": num_interferers,
@@ -350,7 +353,7 @@ def main():
         if result is None:
             continue
 
-        mix_wav, ref_wav, clean_target, meta = result
+        mix_wav, ref_wav, clean_target, reverbed_target, meta = result
 
         # Run inference
         mix_t = torch.from_numpy(mix_wav).float().unsqueeze(0).to(device)
@@ -362,7 +365,8 @@ def main():
         # Compute metrics
         if target_present:
             si_sdr_val = compute_si_sdr(est_wav, clean_target)
-            si_sdr_input = compute_si_sdr(mix_wav, clean_target)
+            # Use reverbed target for baseline so SI-SDRi isn't inflated
+            si_sdr_input = compute_si_sdr(mix_wav, reverbed_target)
             si_sdri = si_sdr_val - si_sdr_input
             tp_metrics["si_sdr"].append(si_sdr_val)
             tp_metrics["si_sdri"].append(si_sdri)

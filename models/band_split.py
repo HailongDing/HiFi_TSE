@@ -122,8 +122,12 @@ class BandMergeDecoder(nn.Module):
         # mask: (B, T, F, 2) -> (B, 2, T, F)
         mask = mask.permute(0, 3, 1, 2)
 
-        # Apply mask to mixture spectrogram
-        masked_spec = mask * mix_spec
+        # Apply complex ratio mask (proper complex multiplication)
+        mask_r, mask_i = mask[:, 0], mask[:, 1]
+        mix_r, mix_i = mix_spec[:, 0], mix_spec[:, 1]
+        out_r = mask_r * mix_r - mask_i * mix_i
+        out_i = mask_r * mix_i + mask_i * mix_r
+        masked_spec = torch.stack([out_r, out_i], dim=1)
 
         # iSTFT to waveform
         return istft(masked_spec, self.n_fft, self.win_length, self.hop_length, length=length)
