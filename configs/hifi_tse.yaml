@@ -128,4 +128,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: null
+  resume: ./checkpoints/checkpoint_0300000.pt

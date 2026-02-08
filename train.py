@@ -63,7 +63,7 @@ def make_train_loader(dataset, batch_size):
 
 
 def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G, sched_D,
-                    keep_last=5):
+                    best_val_loss=None, patience_counter=0, keep_last=5):
     """Save training checkpoint and remove old ones beyond keep_last."""
     ckpt_dir = os.path.dirname(path)
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -75,6 +75,8 @@ def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G,
         "opt_D": opt_D.state_dict(),
         "sched_G": sched_G.state_dict(),
         "sched_D": sched_D.state_dict(),
+        "best_val_loss": best_val_loss,
+        "patience_counter": patience_counter,
     }, path)
 
     # Rotate: keep only the last N numbered checkpoints
@@ -89,7 +91,7 @@ def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G,
 
 
 def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched_D, device):
-    """Load training checkpoint. Returns the step number."""
+    """Load training checkpoint. Returns (step, best_val_loss, patience_counter)."""
     ckpt = torch.load(path, map_location=device)
     generator.load_state_dict(ckpt["generator"])
     discriminator.load_state_dict(ckpt["discriminator"])
@@ -97,7 +99,9 @@ def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched
     opt_D.load_state_dict(ckpt["opt_D"])
     sched_G.load_state_dict(ckpt["sched_G"])
     sched_D.load_state_dict(ckpt["sched_D"])
-    return ckpt["step"]
+    best_val_loss = ckpt.get("best_val_loss", None)
+    patience_counter = ckpt.get("patience_counter", 0)
+    return ckpt["step"], best_val_loss, patience_counter
 
 
 def validate(generator, val_loader, device, writer, step):
@@ -199,15 +203,18 @@ def main():
 
     # ---- Resume ----
     start_step = 0
+    best_val_loss = None
+    patience_counter = 0
     if cfg["checkpoint"]["resume"]:
         resume_path = cfg["checkpoint"]["resume"]
         if os.path.exists(resume_path):
             print("Resuming from", resume_path)
-            start_step = load_checkpoint(
+            start_step, best_val_loss, patience_counter = load_checkpoint(
                 resume_path, generator, discriminator,
                 opt_G, opt_D, sched_G, sched_D, device,
             )
-            print("Resumed at step", start_step)
+            print("Resumed at step {} (best_val_loss={}, patience={})".format(
+                start_step, best_val_loss, patience_counter))
 
     # ---- Curriculum config ----
     phase1_steps = cfg["curriculum"]["phase1_steps"]
@@ -291,28 +298,24 @@ def main():
         loss_G = loss_w["lambda_sep"] * loss_sep + loss_w["lambda_stft"] * loss_stft
 
         # ---- GAN losses (phase 3 only) ----
+        # D and G backward passes are separated so their graphs don't
+        # coexist in GPU memory.  G backward runs first (freeing G graph),
+        # then D forward+backward runs with only D's graph in memory.
         loss_D_val = 0.0
         loss_adv_val = 0.0
         loss_fm_val = 0.0
+        gan_active = False
 
         if current_phase >= 3:
-            # Only use TP samples for discriminator training
             tp_mask = tp_flag.bool()
 
             if tp_mask.any():
-                # Update D (on TP samples only)
-                est_wav_detach = est_wav.detach()
-                d_real_out, d_real_feat = discriminator(target_wav[tp_mask])
-                d_fake_out, d_fake_feat = discriminator(est_wav_detach[tp_mask])
-                loss_D = discriminator_loss(d_real_out, d_fake_out)
-                (loss_D / grad_accum).backward()
-                loss_D_val = loss_D.item()
-
-                # Freeze D during G adversarial forward to prevent
-                # G loss gradients from contaminating D parameters
+                gan_active = True
+                # Step 1: G adversarial forward (D frozen)
                 discriminator.requires_grad_(False)
+                d_real_out_ref, d_real_feat_ref = discriminator(target_wav[tp_mask])
                 d_real_feat_det = [[f.detach() for f in feats]
-                                   for feats in d_real_feat]
+                                   for feats in d_real_feat_ref]
                 d_fake_out_g, d_fake_feat_g = discriminator(est_wav[tp_mask])
                 loss_adv = generator_adv_loss(d_fake_out_g)
                 loss_fm = feature_matching_loss(d_real_feat_det, d_fake_feat_g)
@@ -321,10 +324,18 @@ def main():
                 loss_adv_val = loss_adv.item()
                 loss_fm_val = loss_fm.item()
                 discriminator.requires_grad_(True)
-            # else: entire batch is TA, skip GAN losses for this step
 
-        # ---- Backward G ----
+        # ---- Backward G (frees G graph before D step) ----
         (loss_G / grad_accum).backward()
+
+        if gan_active:
+            # Step 2: D forward+backward (G graph already freed)
+            est_wav_d = est_wav.detach()
+            d_real_out, _ = discriminator(target_wav[tp_mask])
+            d_fake_out, _ = discriminator(est_wav_d[tp_mask])
+            loss_D = discriminator_loss(d_real_out, d_fake_out)
+            (loss_D / grad_accum).backward()
+            loss_D_val = loss_D.item()
 
         # ---- Accumulate & step ----
         if (step + 1) % grad_accum == 0:
@@ -365,18 +376,44 @@ def main():
         if step > 0 and step % save_interval == 0:
             ckpt_path = os.path.join(ckpt_dir, "checkpoint_{:07d}.pt".format(step))
             save_checkpoint(ckpt_path, step, generator, discriminator,
-                            opt_G, opt_D, sched_G, sched_D)
+                            opt_G, opt_D, sched_G, sched_D,
+                            best_val_loss=best_val_loss,
+                            patience_counter=patience_counter)
             print("Saved checkpoint:", ckpt_path)
 
-        # ---- Validation ----
+        # ---- Validation + best model tracking ----
         if step > 0 and step % val_interval == 0:
             val_loss = validate(generator, val_loader, device, writer, step)
-            print("Validation loss: {:.4f}".format(val_loss))
+
+            # Best model tracking (active in phase 3 where overfitting risk exists)
+            early_stop_patience = 10  # stop after 10 validations without improvement
+            if current_phase >= 3:
+                if best_val_loss is None or val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    best_path = os.path.join(ckpt_dir, "checkpoint_best.pt")
+                    save_checkpoint(best_path, step, generator, discriminator,
+                                    opt_G, opt_D, sched_G, sched_D,
+                                    best_val_loss=best_val_loss,
+                                    patience_counter=patience_counter,
+                                    keep_last=999)
+                    print("Validation loss: {:.4f} (new best, saved checkpoint_best.pt)".format(val_loss))
+                else:
+                    patience_counter += 1
+                    print("Validation loss: {:.4f} (no improvement for {}/{} evals)".format(
+                        val_loss, patience_counter, early_stop_patience))
+                    if patience_counter >= early_stop_patience:
+                        print("Early stopping triggered. Best val loss: {:.4f}".format(best_val_loss))
+                        break
+            else:
+                print("Validation loss: {:.4f}".format(val_loss))
 
     # Final checkpoint
     final_path = os.path.join(ckpt_dir, "checkpoint_final.pt")
     save_checkpoint(final_path, total_steps, generator, discriminator,
-                    opt_G, opt_D, sched_G, sched_D)
+                    opt_G, opt_D, sched_G, sched_D,
+                    best_val_loss=best_val_loss,
+                    patience_counter=patience_counter)
     print("Training complete. Final checkpoint:", final_path)
     writer.close()
 
