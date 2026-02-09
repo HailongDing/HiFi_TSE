@@ -1,6 +1,7 @@
 """Scene-aware separation losses: SI-SDR for target-present, energy loss for target-absent."""
 
 import torch
+import torch.nn.functional as F
 
 
 def si_sdr(estimate, target, eps=1e-8):
@@ -55,6 +56,19 @@ def energy_loss(estimate, eps=1e-8):
     """
     energy = estimate.pow(2).mean(dim=-1)
     return 10.0 * torch.log10(energy + eps)
+
+
+def l1_waveform_loss(estimate, target):
+    """Scale-sensitive L1 loss on time-domain waveform.
+
+    Args:
+        estimate: (B, L) predicted waveform
+        target: (B, L) ground truth waveform
+
+    Returns:
+        scalar loss
+    """
+    return F.l1_loss(estimate, target)
 
 
 def scene_aware_loss(estimate, target, target_present, ta_weight=0.2):

@@ -85,9 +85,11 @@ discriminator:
 
 loss_weights:
   lambda_sep: 1.0
-  lambda_stft: 0.5
+  lambda_stft: 1.5
+  lambda_l1: 0.5
   lambda_adv: 0.1
   lambda_fm: 2.0
+  ta_weight: 0.1
 
 training:
   batch_size: 2
@@ -128,4 +130,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0300000.pt
+  resume: null

@@ -32,7 +32,7 @@ from losses.adversarial import (
     feature_matching_loss,
     generator_adv_loss,
 )
-from losses.separation import scene_aware_loss, si_sdr_loss
+from losses.separation import l1_waveform_loss, scene_aware_loss, si_sdr_loss
 from losses.stft_loss import MultiResolutionSTFTLoss
 from models.discriminator import Discriminator
 from models.generator import Generator
@@ -281,21 +281,27 @@ def main():
         # ---- Forward G ----
         est_wav = generator(mix_wav, ref_wav)
 
-        # ---- Separation + STFT loss (always active) ----
+        # ---- Separation + STFT + L1 loss (always active) ----
+        ta_weight = loss_w.get("ta_weight", 0.1)
         if current_phase == 1:
             loss_sep = si_sdr_loss(est_wav, target_wav)
         else:
-            loss_sep = scene_aware_loss(est_wav, target_wav, tp_flag)
+            loss_sep = scene_aware_loss(est_wav, target_wav, tp_flag,
+                                        ta_weight=ta_weight)
 
         if current_phase == 1:
             loss_stft = stft_loss_fn(est_wav, target_wav)
+            loss_l1 = l1_waveform_loss(est_wav, target_wav)
         else:
             tp_mask_stft = tp_flag.bool()
             if tp_mask_stft.any():
                 loss_stft = stft_loss_fn(est_wav[tp_mask_stft], target_wav[tp_mask_stft])
+                loss_l1 = l1_waveform_loss(est_wav[tp_mask_stft], target_wav[tp_mask_stft])
             else:
                 loss_stft = torch.tensor(0.0, device=device)
-        loss_G = loss_w["lambda_sep"] * loss_sep + loss_w["lambda_stft"] * loss_stft
+                loss_l1 = torch.tensor(0.0, device=device)
+        loss_G = loss_w["lambda_sep"] * loss_sep + loss_w["lambda_stft"] * loss_stft \
+            + loss_w["lambda_l1"] * loss_l1
 
         # ---- GAN losses (phase 3 only) ----
         # D and G backward passes are separated so their graphs don't
@@ -358,14 +364,16 @@ def main():
         if step % log_interval == 0:
             rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             print("step {:>7d} | phase {} | loss_G {:.4f} | sep {:.4f} | stft {:.4f}"
-                  " | adv {:.4f} | fm {:.4f} | D {:.4f} | rss {:.0f}MB"
+                  " | l1 {:.4f} | adv {:.4f} | fm {:.4f} | D {:.4f} | rss {:.0f}MB"
                   " | {:.2f}s".format(
                       step, current_phase, loss_G.item(), loss_sep.item(),
-                      loss_stft.item(), loss_adv_val, loss_fm_val, loss_D_val,
+                      loss_stft.item(), loss_l1.item(),
+                      loss_adv_val, loss_fm_val, loss_D_val,
                       rss_mb, dt))
             writer.add_scalar("train/loss_G", loss_G.item(), step)
             writer.add_scalar("train/loss_sep", loss_sep.item(), step)
             writer.add_scalar("train/loss_stft", loss_stft.item(), step)
+            writer.add_scalar("train/loss_l1", loss_l1.item(), step)
             writer.add_scalar("train/lr", sched_G.get_last_lr()[0], step)
             if current_phase >= 3:
                 writer.add_scalar("train/loss_D", loss_D_val, step)

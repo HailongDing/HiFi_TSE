@@ -89,7 +89,17 @@ class BandMergeDecoder(nn.Module):
         for start, end in bands:
             band_width = end - start + 1
             output_dim = band_width * 2  # real + imag
-            self.projections.append(nn.Linear(feature_dim, output_dim))
+            proj = nn.Linear(feature_dim, output_dim)
+            # Initialize mask near identity (1+0i) so model starts from
+            # pass-through instead of full suppression.  The output is
+            # reshaped to (B, T, band_width, 2) with interleaved [real, imag],
+            # so even indices are real and odd indices are imaginary.
+            nn.init.normal_(proj.weight, std=1e-4)
+            with torch.no_grad():
+                proj.bias.zero_()
+                proj.bias[0::2] = 1.0   # real part = 1 (pass-through)
+                # imag part (odd indices) stays 0
+            self.projections.append(proj)
 
     def forward(self, z, mix_spec, length=None):
         """
