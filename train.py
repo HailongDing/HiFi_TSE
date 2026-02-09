@@ -32,7 +32,7 @@ from losses.adversarial import (
     feature_matching_loss,
     generator_adv_loss,
 )
-from losses.separation import l1_waveform_loss, scene_aware_loss, si_sdr_loss
+from losses.separation import l1_waveform_loss, scene_aware_loss, si_sdr, si_sdr_loss
 from losses.stft_loss import MultiResolutionSTFTLoss
 from models.discriminator import Discriminator
 from models.generator import Generator
@@ -62,9 +62,23 @@ def make_train_loader(dataset, batch_size):
     )
 
 
+def _step_from_filename(fname):
+    """Extract step number from checkpoint_XXXXXXX.pt filename, or None."""
+    base = os.path.splitext(fname)[0]  # checkpoint_0100000
+    parts = base.split("_")
+    if len(parts) >= 2 and parts[-1].isdigit():
+        return int(parts[-1])
+    return None
+
+
 def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G, sched_D,
-                    best_val_loss=None, patience_counter=0, keep_last=5):
-    """Save training checkpoint and remove old ones beyond keep_last."""
+                    best_val_loss=None, patience_counter=0, keep_last=5,
+                    protected_steps=None):
+    """Save training checkpoint and remove old ones beyond keep_last.
+
+    Args:
+        protected_steps: set of step numbers whose checkpoints are never deleted.
+    """
     ckpt_dir = os.path.dirname(path)
     os.makedirs(ckpt_dir, exist_ok=True)
     torch.save({
@@ -79,13 +93,19 @@ def save_checkpoint(path, step, generator, discriminator, opt_G, opt_D, sched_G,
         "patience_counter": patience_counter,
     }, path)
 
-    # Rotate: keep only the last N numbered checkpoints
+    if protected_steps is None:
+        protected_steps = set()
+
+    # Rotate: keep only the last N numbered checkpoints (skip protected + best)
+    special = {"checkpoint_final.pt", "checkpoint_best.pt"}
     numbered = sorted(
         f for f in os.listdir(ckpt_dir)
-        if f.startswith("checkpoint_") and f.endswith(".pt") and f != "checkpoint_final.pt"
+        if f.startswith("checkpoint_") and f.endswith(".pt") and f not in special
     )
-    while len(numbered) > keep_last:
-        old = os.path.join(ckpt_dir, numbered.pop(0))
+    # Filter out protected checkpoints before counting
+    deletable = [f for f in numbered if _step_from_filename(f) not in protected_steps]
+    while len(deletable) > keep_last:
+        old = os.path.join(ckpt_dir, deletable.pop(0))
         os.remove(old)
         print("Removed old checkpoint:", old)
 
@@ -105,11 +125,16 @@ def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched
 
 
 def validate(generator, val_loader, device, writer, step):
-    """Run validation and log metrics."""
+    """Run validation and log decomposed metrics."""
     generator.eval()
     total_loss = 0.0
+    total_si_sdr = 0.0
+    total_rms_num = 0.0
+    total_rms_den = 0.0
+    total_ta_energy = 0.0
     count = 0
-    stft_loss_fn = MultiResolutionSTFTLoss().to(device)
+    tp_count = 0
+    ta_count = 0
 
     with torch.no_grad():
         for batch in val_loader:
@@ -117,15 +142,127 @@ def validate(generator, val_loader, device, writer, step):
             est_wav = generator(mix_wav, ref_wav)
             loss = scene_aware_loss(est_wav, target_wav, tp_flag)
             total_loss += loss.item()
+
+            # Decomposed metrics
+            tp_mask = tp_flag.bool()
+            if tp_mask.any():
+                sdr_vals = si_sdr(est_wav[tp_mask], target_wav[tp_mask])
+                total_si_sdr += sdr_vals.sum().item()
+                total_rms_num += est_wav[tp_mask].pow(2).mean().sqrt().item()
+                total_rms_den += target_wav[tp_mask].pow(2).mean().sqrt().clamp(min=1e-8).item()
+                tp_count += 1
+
+            ta_mask = ~tp_mask
+            if ta_mask.any():
+                ta_energy = 10 * torch.log10(est_wav[ta_mask].pow(2).mean().clamp(min=1e-10)).item()
+                total_ta_energy += ta_energy
+                ta_count += 1
+
             count += 1
-            if count >= 50:  # cap validation batches
+            if count >= 50:
                 break
 
     avg_loss = total_loss / max(count, 1)
+    avg_si_sdr = total_si_sdr / max(tp_count, 1)
+    avg_rms_ratio = (total_rms_num / max(tp_count, 1)) / max(total_rms_den / max(tp_count, 1), 1e-8)
+    avg_ta_energy = total_ta_energy / max(ta_count, 1) if ta_count > 0 else float('nan')
+
+    print("Validation loss: {:.4f} | si_sdr: {:.2f} dB | rms_ratio: {:.3f} | ta_energy: {:.1f} dB".format(
+        avg_loss, avg_si_sdr, avg_rms_ratio, avg_ta_energy))
+
     if writer is not None:
         writer.add_scalar("val/scene_aware_loss", avg_loss, step)
+        writer.add_scalar("val/si_sdr", avg_si_sdr, step)
+        writer.add_scalar("val/rms_ratio", avg_rms_ratio, step)
+        if ta_count > 0:
+            writer.add_scalar("val/ta_energy", avg_ta_energy, step)
+
     generator.train()
     return avg_loss
+
+
+def mini_evaluate(generator, val_loader, device, step):
+    """Quick evaluation at milestones: 10 batches, report SI-SDR + rms_ratio."""
+    generator.eval()
+    total_si_sdr = 0.0
+    total_rms_num = 0.0
+    total_rms_den = 0.0
+    n_samples = 0
+
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            if i >= 10:
+                break
+            mix_wav, ref_wav, target_wav, tp_flag = [x.to(device) for x in batch]
+            est_wav = generator(mix_wav, ref_wav)
+            tp_mask = tp_flag.bool()
+            if tp_mask.any():
+                sdr_vals = si_sdr(est_wav[tp_mask], target_wav[tp_mask])
+                total_si_sdr += sdr_vals.sum().item()
+                n_samples += tp_mask.sum().item()
+                total_rms_num += est_wav[tp_mask].pow(2).mean().sqrt().item()
+                total_rms_den += target_wav[tp_mask].pow(2).mean().sqrt().clamp(min=1e-8).item()
+
+    avg_si_sdr = total_si_sdr / max(n_samples, 1)
+    avg_rms_ratio = total_rms_num / max(total_rms_den, 1e-8) if total_rms_den > 0 else 0.0
+
+    print("MILESTONE_EVAL step {} | si_sdr: {:.2f} dB | rms_ratio: {:.3f}".format(
+        step, avg_si_sdr, avg_rms_ratio))
+
+    if step <= 5000 and avg_rms_ratio < 0.3:
+        print("EARLY_CHECK WARNING step {} | rms_ratio {:.3f} < 0.3 — possible over-suppression!".format(
+            step, avg_rms_ratio))
+
+    generator.train()
+    return avg_si_sdr, avg_rms_ratio
+
+
+def real_audio_check(generator, device, step, ckpt_dir):
+    """Run inference on real audio files and save output wav at milestones."""
+    import torchaudio
+
+    mix_path = "real_audio/mix_16k.wav"
+    ref_path = "real_audio/ref_16k.wav"
+    if not os.path.exists(mix_path) or not os.path.exists(ref_path):
+        print("REAL_AUDIO_CHECK step {} | skipped (files not found)".format(step))
+        return
+
+    generator.eval()
+    with torch.no_grad():
+        mix_wav, mix_sr = torchaudio.load(mix_path)
+        ref_wav, ref_sr = torchaudio.load(ref_path)
+
+        # Resample to 48kHz if needed
+        if mix_sr != 48000:
+            mix_wav = torchaudio.functional.resample(mix_wav, mix_sr, 48000)
+        if ref_sr != 48000:
+            ref_wav = torchaudio.functional.resample(ref_wav, ref_sr, 48000)
+
+        # Add batch dim, move to device
+        mix_wav = mix_wav.unsqueeze(0).to(device)  # (1, C, L) or (1, L)
+        ref_wav = ref_wav.unsqueeze(0).to(device)
+
+        # Ensure mono (1, L)
+        if mix_wav.dim() == 3:
+            mix_wav = mix_wav[:, 0, :]
+        if ref_wav.dim() == 3:
+            ref_wav = ref_wav[:, 0, :]
+
+        est_wav = generator(mix_wav, ref_wav)
+
+        est_rms = est_wav.pow(2).mean().sqrt().item()
+        mix_rms = mix_wav.pow(2).mean().sqrt().item()
+        ratio = est_rms / max(mix_rms, 1e-8)
+
+        print("REAL_AUDIO_CHECK step {} | est_rms: {:.4f} | mix_rms: {:.4f} | ratio: {:.3f}".format(
+            step, est_rms, mix_rms, ratio))
+
+        # Save output wav
+        out_path = os.path.join(ckpt_dir, "real_audio_step_{:07d}.wav".format(step))
+        torchaudio.save(out_path, est_wav.cpu().squeeze(0).unsqueeze(0), 48000)
+        print("  -> Saved:", out_path)
+
+    generator.train()
 
 
 def main():
@@ -242,6 +379,10 @@ def main():
         train_loader = make_train_loader(train_dataset, train_cfg["batch_size"])
         train_iter = infinite_loader(train_loader)
 
+    # Phase boundary checkpoints are never deleted by rotation
+    PROTECTED_STEPS = {phase1_steps, phase2_steps}
+    MILESTONE_STEPS = {5000, phase1_steps, 200000, phase2_steps, 400000, total_steps}
+
     print("Starting training from step {} (phase {})".format(start_step, current_phase))
 
     # ---- Training loop ----
@@ -280,6 +421,14 @@ def main():
 
         # ---- Forward G ----
         est_wav = generator(mix_wav, ref_wav)
+
+        # ---- RMS ratio monitoring (negligible cost) ----
+        with torch.no_grad():
+            tp_mon = tp_flag.bool() if current_phase >= 2 else torch.ones(est_wav.shape[0], dtype=torch.bool, device=device)
+            if tp_mon.any():
+                rms_ratio = (est_wav[tp_mon].pow(2).mean().sqrt() / target_wav[tp_mon].pow(2).mean().sqrt().clamp(min=1e-8)).item()
+            else:
+                rms_ratio = 0.0
 
         # ---- Separation + STFT + L1 loss (always active) ----
         ta_weight = loss_w.get("ta_weight", 0.1)
@@ -364,16 +513,17 @@ def main():
         if step % log_interval == 0:
             rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             print("step {:>7d} | phase {} | loss_G {:.4f} | sep {:.4f} | stft {:.4f}"
-                  " | l1 {:.4f} | adv {:.4f} | fm {:.4f} | D {:.4f} | rss {:.0f}MB"
-                  " | {:.2f}s".format(
+                  " | l1 {:.4f} | adv {:.4f} | fm {:.4f} | D {:.4f} | rms {:.2f}"
+                  " | rss {:.0f}MB | {:.2f}s".format(
                       step, current_phase, loss_G.item(), loss_sep.item(),
                       loss_stft.item(), loss_l1.item(),
                       loss_adv_val, loss_fm_val, loss_D_val,
-                      rss_mb, dt))
+                      rms_ratio, rss_mb, dt))
             writer.add_scalar("train/loss_G", loss_G.item(), step)
             writer.add_scalar("train/loss_sep", loss_sep.item(), step)
             writer.add_scalar("train/loss_stft", loss_stft.item(), step)
             writer.add_scalar("train/loss_l1", loss_l1.item(), step)
+            writer.add_scalar("train/rms_ratio", rms_ratio, step)
             writer.add_scalar("train/lr", sched_G.get_last_lr()[0], step)
             if current_phase >= 3:
                 writer.add_scalar("train/loss_D", loss_D_val, step)
@@ -386,7 +536,8 @@ def main():
             save_checkpoint(ckpt_path, step, generator, discriminator,
                             opt_G, opt_D, sched_G, sched_D,
                             best_val_loss=best_val_loss,
-                            patience_counter=patience_counter)
+                            patience_counter=patience_counter,
+                            protected_steps=PROTECTED_STEPS)
             print("Saved checkpoint:", ckpt_path)
 
         # ---- Validation + best model tracking ----
@@ -405,16 +556,19 @@ def main():
                                     best_val_loss=best_val_loss,
                                     patience_counter=patience_counter,
                                     keep_last=999)
-                    print("Validation loss: {:.4f} (new best, saved checkpoint_best.pt)".format(val_loss))
+                    print("  -> New best model, saved checkpoint_best.pt")
                 else:
                     patience_counter += 1
-                    print("Validation loss: {:.4f} (no improvement for {}/{} evals)".format(
-                        val_loss, patience_counter, early_stop_patience))
+                    print("  -> No improvement for {}/{} evals".format(
+                        patience_counter, early_stop_patience))
                     if patience_counter >= early_stop_patience:
                         print("Early stopping triggered. Best val loss: {:.4f}".format(best_val_loss))
                         break
-            else:
-                print("Validation loss: {:.4f}".format(val_loss))
+
+        # ---- Milestone evaluation ----
+        if step in MILESTONE_STEPS:
+            mini_evaluate(generator, val_loader, device, step)
+            real_audio_check(generator, device, step, ckpt_dir)
 
     # Final checkpoint
     final_path = os.path.join(ckpt_dir, "checkpoint_final.pt")

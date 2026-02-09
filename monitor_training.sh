@@ -58,6 +58,32 @@ tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
 > ${line}"
     fi
 
+    # Milestone evaluation
+    if echo "$line" | grep -q "MILESTONE_EVAL"; then
+        send_msg "**Milestone Evaluation**
+> ${line}"
+    fi
+
+    # Real audio check
+    if echo "$line" | grep -q "REAL_AUDIO_CHECK"; then
+        send_msg "**Real Audio Check**
+> ${line}"
+    fi
+
+    # Early warning: possible over-suppression
+    if echo "$line" | grep -q "EARLY_CHECK WARNING"; then
+        send_msg "**⚠️ EARLY WARNING: Possible Over-Suppression ⚠️**
+> ${line}
+> Action: Check rms_ratio trend. If sustained < 0.3, consider restarting."
+    fi
+
+    # Over-suppression detection from training log rms_ratio
+    if echo "$line" | grep -qE "^step.*rms 0\.([0-2][0-9]|0[0-9])"; then
+        send_msg "**⚠️ Over-Suppression Alert**
+> ${line}
+> rms_ratio < 0.3 detected in training log"
+    fi
+
     # Step progress (every NOTIFY_INTERVAL steps)
     if echo "$line" | grep -qE "^step[[:space:]]+[0-9]"; then
         step=$(echo "$line" | grep -oE "step[[:space:]]+[0-9]+" | grep -oE "[0-9]+")
