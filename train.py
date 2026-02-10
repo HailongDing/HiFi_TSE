@@ -238,6 +238,14 @@ def real_audio_check(generator, device, step, ckpt_dir):
         if ref_sr != 48000:
             ref_wav = torchaudio.functional.resample(ref_wav, ref_sr, 48000)
 
+        # Truncate to 4s (192000 samples) to match training segment length
+        # and avoid OOM from TFGridNet's O(T^2) self-attention on long audio
+        max_samples = 192000
+        if mix_wav.shape[-1] > max_samples:
+            mix_wav = mix_wav[..., :max_samples]
+        if ref_wav.shape[-1] > max_samples:
+            ref_wav = ref_wav[..., :max_samples]
+
         # Add batch dim, move to device
         mix_wav = mix_wav.unsqueeze(0).to(device)  # (1, C, L) or (1, L)
         ref_wav = ref_wav.unsqueeze(0).to(device)
