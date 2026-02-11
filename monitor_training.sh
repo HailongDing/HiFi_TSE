@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-LOG_FILE="${1:-/tmp/hifi_tse_train.log}"
+LOG_FILE="${1:-./checkpoints/train.log}"
 WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=08365047-6447-4f2c-81d1-6975fd0e1fa0"
 HOSTNAME=$(hostname)
 LAST_NOTIFY_STEP=-1
