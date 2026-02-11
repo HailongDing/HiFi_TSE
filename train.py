@@ -32,7 +32,7 @@ from losses.adversarial import (
     feature_matching_loss,
     generator_adv_loss,
 )
-from losses.separation import l1_waveform_loss, scene_aware_loss, si_sdr, si_sdr_loss
+from losses.separation import amplitude_loss, l1_waveform_loss, scene_aware_loss, si_sdr, si_sdr_loss
 from losses.stft_loss import MultiResolutionSTFTLoss
 from models.discriminator import Discriminator
 from models.generator import Generator
@@ -449,16 +449,29 @@ def main():
         if current_phase == 1:
             loss_stft = stft_loss_fn(est_wav, target_wav)
             loss_l1 = l1_waveform_loss(est_wav, target_wav)
+            loss_amp = amplitude_loss(est_wav, target_wav)
         else:
             tp_mask_stft = tp_flag.bool()
             if tp_mask_stft.any():
                 loss_stft = stft_loss_fn(est_wav[tp_mask_stft], target_wav[tp_mask_stft])
                 loss_l1 = l1_waveform_loss(est_wav[tp_mask_stft], target_wav[tp_mask_stft])
+                loss_amp = amplitude_loss(est_wav[tp_mask_stft], target_wav[tp_mask_stft])
             else:
                 loss_stft = torch.tensor(0.0, device=device)
                 loss_l1 = torch.tensor(0.0, device=device)
+                loss_amp = torch.tensor(0.0, device=device)
+
+        # Amplitude loss warmup: ramp lambda_amp from 0 to full over 5K steps
+        # after phase 1 ends (avoids optimizer shock from sudden new gradient)
+        amp_warmup_steps = 5000
+        if step < phase1_steps + amp_warmup_steps:
+            amp_scale = max(0.0, (step - phase1_steps) / amp_warmup_steps) if step >= phase1_steps else 0.0
+        else:
+            amp_scale = 1.0
+
         loss_G = loss_w["lambda_sep"] * loss_sep + loss_w["lambda_stft"] * loss_stft \
-            + loss_w["lambda_l1"] * loss_l1
+            + loss_w["lambda_l1"] * loss_l1 \
+            + loss_w["lambda_amp"] * amp_scale * loss_amp
 
         # ---- GAN losses (phase 3 only) ----
         # D and G backward passes are separated so their graphs don't
@@ -521,16 +534,17 @@ def main():
         if step % log_interval == 0:
             rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             print("step {:>7d} | phase {} | loss_G {:.4f} | sep {:.4f} | stft {:.4f}"
-                  " | l1 {:.4f} | adv {:.4f} | fm {:.4f} | D {:.4f} | rms {:.2f}"
+                  " | l1 {:.4f} | amp {:.4f} | adv {:.4f} | fm {:.4f} | D {:.4f} | rms {:.2f}"
                   " | rss {:.0f}MB | {:.2f}s".format(
                       step, current_phase, loss_G.item(), loss_sep.item(),
-                      loss_stft.item(), loss_l1.item(),
+                      loss_stft.item(), loss_l1.item(), loss_amp.item(),
                       loss_adv_val, loss_fm_val, loss_D_val,
                       rms_ratio, rss_mb, dt))
             writer.add_scalar("train/loss_G", loss_G.item(), step)
             writer.add_scalar("train/loss_sep", loss_sep.item(), step)
             writer.add_scalar("train/loss_stft", loss_stft.item(), step)
             writer.add_scalar("train/loss_l1", loss_l1.item(), step)
+            writer.add_scalar("train/loss_amp", loss_amp.item(), step)
             writer.add_scalar("train/rms_ratio", rms_ratio, step)
             writer.add_scalar("train/lr", sched_G.get_last_lr()[0], step)
             if current_phase >= 3:

@@ -85,8 +85,9 @@ discriminator:
 
 loss_weights:
   lambda_sep: 1.0
-  lambda_stft: 1.5
+  lambda_stft: 5.0             # increased from 1.5: stronger scale anchor
   lambda_l1: 0.5
+  lambda_amp: 15.0             # NEW: RMS ratio anchor to prevent over-suppression
   lambda_adv: 0.1
   lambda_fm: 2.0
   ta_weight: 0.1
@@ -130,4 +131,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: null
+  resume: ./checkpoints/checkpoint_0100000.pt

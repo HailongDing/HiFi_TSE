@@ -43,19 +43,38 @@ def si_sdr_loss(estimate, target):
     return -si_sdr(estimate, target).mean()
 
 
-def energy_loss(estimate, eps=1e-8):
+def energy_loss(estimate, floor_db=-40.0, eps=1e-8):
     """Energy loss for target-absent samples.
 
-    Forces output energy toward zero: 10 * log10(mean(estimate^2) + eps)
+    Forces output energy toward zero with a floor to prevent unbounded
+    suppression gradients on shared model layers.
 
     Args:
         estimate: (B, L) predicted waveform
+        floor_db: minimum energy in dB (gradient stops below this)
 
     Returns:
-        (B,) energy values in dB
+        (B,) energy values in dB, clamped at floor_db
     """
     energy = estimate.pow(2).mean(dim=-1)
-    return 10.0 * torch.log10(energy + eps)
+    energy_db = 10.0 * torch.log10(energy + eps)
+    return energy_db.clamp(min=floor_db)
+
+
+def amplitude_loss(estimate, target, eps=1e-8):
+    """Penalize RMS ratio deviation from 1.0.
+
+    Args:
+        estimate: (B, L) predicted waveform
+        target: (B, L) ground truth waveform
+
+    Returns:
+        scalar loss = mean((rms_est / rms_tgt - 1)^2)
+    """
+    rms_est = estimate.pow(2).mean(dim=-1).sqrt()
+    rms_tgt = target.pow(2).mean(dim=-1).sqrt().clamp(min=eps)
+    ratio = rms_est / rms_tgt
+    return (ratio - 1.0).pow(2).mean()
 
 
 def l1_waveform_loss(estimate, target):

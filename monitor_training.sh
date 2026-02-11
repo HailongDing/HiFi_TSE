@@ -78,10 +78,12 @@ tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
     fi
 
     # Over-suppression detection from training log rms_ratio
-    if echo "$line" | grep -qE "^step.*rms 0\.([0-2][0-9]|0[0-9])"; then
+    # Skip TA batches (stft 0.0000 means all-TA batch, not real suppression)
+    if echo "$line" | grep -qE "^step.*rms 0\.([0-2][0-9]|0[0-9])" && \
+       ! echo "$line" | grep -q "stft 0.0000"; then
         send_msg "**⚠️ Over-Suppression Alert**
 > ${line}
-> rms_ratio < 0.3 detected in training log"
+> rms_ratio < 0.3 detected in training log (non-TA batch)"
     fi
 
     # Step progress (every NOTIFY_INTERVAL steps)
