@@ -133,8 +133,8 @@ def validate(generator, val_loader, device, writer, step):
     total_rms_den = 0.0
     total_ta_energy = 0.0
     count = 0
-    tp_count = 0
-    ta_count = 0
+    tp_samples = 0
+    ta_batches = 0
 
     with torch.no_grad():
         for batch in val_loader:
@@ -146,26 +146,30 @@ def validate(generator, val_loader, device, writer, step):
             # Decomposed metrics
             tp_mask = tp_flag.bool()
             if tp_mask.any():
+                n_tp = tp_mask.sum().item()
                 sdr_vals = si_sdr(est_wav[tp_mask], target_wav[tp_mask])
                 total_si_sdr += sdr_vals.sum().item()
-                total_rms_num += est_wav[tp_mask].pow(2).mean().sqrt().item()
-                total_rms_den += target_wav[tp_mask].pow(2).mean().sqrt().clamp(min=1e-8).item()
-                tp_count += 1
+                # Per-sample RMS: compute per sample then sum
+                est_rms = est_wav[tp_mask].pow(2).mean(dim=-1).sqrt()
+                tgt_rms = target_wav[tp_mask].pow(2).mean(dim=-1).sqrt().clamp(min=1e-8)
+                total_rms_num += est_rms.sum().item()
+                total_rms_den += tgt_rms.sum().item()
+                tp_samples += n_tp
 
             ta_mask = ~tp_mask
             if ta_mask.any():
                 ta_energy = 10 * torch.log10(est_wav[ta_mask].pow(2).mean().clamp(min=1e-10)).item()
                 total_ta_energy += ta_energy
-                ta_count += 1
+                ta_batches += 1
 
             count += 1
             if count >= 50:
                 break
 
     avg_loss = total_loss / max(count, 1)
-    avg_si_sdr = total_si_sdr / max(tp_count, 1)
-    avg_rms_ratio = (total_rms_num / max(tp_count, 1)) / max(total_rms_den / max(tp_count, 1), 1e-8)
-    avg_ta_energy = total_ta_energy / max(ta_count, 1) if ta_count > 0 else float('nan')
+    avg_si_sdr = total_si_sdr / max(tp_samples, 1)
+    avg_rms_ratio = (total_rms_num / max(tp_samples, 1)) / max(total_rms_den / max(tp_samples, 1), 1e-8)
+    avg_ta_energy = total_ta_energy / max(ta_batches, 1) if ta_batches > 0 else float('nan')
 
     print("Validation loss: {:.4f} | si_sdr: {:.2f} dB | rms_ratio: {:.3f} | ta_energy: {:.1f} dB".format(
         avg_loss, avg_si_sdr, avg_rms_ratio, avg_ta_energy))
