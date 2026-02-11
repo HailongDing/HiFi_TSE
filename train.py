@@ -178,7 +178,7 @@ def validate(generator, val_loader, device, writer, step):
         writer.add_scalar("val/scene_aware_loss", avg_loss, step)
         writer.add_scalar("val/si_sdr", avg_si_sdr, step)
         writer.add_scalar("val/rms_ratio", avg_rms_ratio, step)
-        if ta_count > 0:
+        if ta_batches > 0:
             writer.add_scalar("val/ta_energy", avg_ta_energy, step)
 
     generator.train()
