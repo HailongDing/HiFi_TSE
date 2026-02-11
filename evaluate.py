@@ -331,8 +331,9 @@ def main():
     interferer_range = cfg["data"]["num_interferers_range"]
     val_spk_list = list(val_speakers.keys())
 
-    # Metric accumulators
-    tp_metrics = {"si_sdr": [], "si_sdri": [], "pesq": [], "stoi": []}
+    # Metric accumulators (primary: against reverbed target; secondary: against clean for dereverb tracking)
+    tp_metrics = {"si_sdr": [], "si_sdri": [], "pesq": [], "stoi": [],
+                  "si_sdr_clean": [], "pesq_clean": [], "stoi_clean": []}
     ta_metrics = {"energy_db": [], "suppression_db": []}
     saved_count = 0
 
@@ -362,22 +363,31 @@ def main():
             est_t = generator(mix_t, ref_t)
         est_wav = est_t.squeeze(0).cpu().numpy()
 
-        # Compute metrics
+        # Compute metrics (primary: against reverbed target)
         if target_present:
-            si_sdr_val = compute_si_sdr(est_wav, clean_target)
-            # Use reverbed target for baseline so SI-SDRi isn't inflated
+            si_sdr_val = compute_si_sdr(est_wav, reverbed_target)
             si_sdr_input = compute_si_sdr(mix_wav, reverbed_target)
             si_sdri = si_sdr_val - si_sdr_input
             tp_metrics["si_sdr"].append(si_sdr_val)
             tp_metrics["si_sdri"].append(si_sdri)
 
-            pesq_val = compute_pesq(est_wav, clean_target)
+            pesq_val = compute_pesq(est_wav, reverbed_target)
             if pesq_val is not None:
                 tp_metrics["pesq"].append(pesq_val)
 
-            stoi_val = compute_stoi(est_wav, clean_target)
+            stoi_val = compute_stoi(est_wav, reverbed_target)
             if stoi_val is not None:
                 tp_metrics["stoi"].append(stoi_val)
+
+            # Secondary metrics: against clean target (dereverberation tracking)
+            si_sdr_clean = compute_si_sdr(est_wav, clean_target)
+            tp_metrics["si_sdr_clean"].append(si_sdr_clean)
+            pesq_clean = compute_pesq(est_wav, clean_target)
+            if pesq_clean is not None:
+                tp_metrics["pesq_clean"].append(pesq_clean)
+            stoi_clean = compute_stoi(est_wav, clean_target)
+            if stoi_clean is not None:
+                tp_metrics["stoi_clean"].append(stoi_clean)
         else:
             est_energy = compute_energy_db(est_wav)
             mix_energy = compute_energy_db(mix_wav)
@@ -409,7 +419,7 @@ def main():
     print("\nSamples: {} TP, {} TA".format(n_tp, n_ta))
 
     if n_tp > 0:
-        print("\n--- Target Present (TP) ---")
+        print("\n--- Target Present (TP) — Primary (vs reverbed target) ---")
         print("  SI-SDR:  {:.2f} dB  (std {:.2f})".format(
             np.mean(tp_metrics["si_sdr"]), np.std(tp_metrics["si_sdr"])))
         print("  SI-SDRi: {:.2f} dB  (std {:.2f})".format(
@@ -420,6 +430,17 @@ def main():
         if tp_metrics["stoi"]:
             print("  STOI:    {:.3f}     (std {:.3f})".format(
                 np.mean(tp_metrics["stoi"]), np.std(tp_metrics["stoi"])))
+        # Secondary metrics (vs clean target — dereverberation tracking)
+        if tp_metrics["si_sdr_clean"]:
+            print("\n  --- Secondary (vs clean target, dereverb tracking) ---")
+            print("  SI-SDR (clean):  {:.2f} dB  (std {:.2f})".format(
+                np.mean(tp_metrics["si_sdr_clean"]), np.std(tp_metrics["si_sdr_clean"])))
+            if tp_metrics["pesq_clean"]:
+                print("  PESQ (clean):    {:.2f}      (std {:.2f})".format(
+                    np.mean(tp_metrics["pesq_clean"]), np.std(tp_metrics["pesq_clean"])))
+            if tp_metrics["stoi_clean"]:
+                print("  STOI (clean):    {:.3f}     (std {:.3f})".format(
+                    np.mean(tp_metrics["stoi_clean"]), np.std(tp_metrics["stoi_clean"])))
 
     if n_ta > 0:
         print("\n--- Target Absent (TA) ---")
@@ -451,6 +472,16 @@ def main():
             if tp_metrics["stoi"]:
                 results["tp"]["stoi_mean"] = float(np.mean(tp_metrics["stoi"]))
                 results["tp"]["stoi_std"] = float(np.std(tp_metrics["stoi"]))
+            # Secondary metrics (vs clean target)
+            if tp_metrics["si_sdr_clean"]:
+                results["tp"]["si_sdr_clean_mean"] = float(np.mean(tp_metrics["si_sdr_clean"]))
+                results["tp"]["si_sdr_clean_std"] = float(np.std(tp_metrics["si_sdr_clean"]))
+            if tp_metrics["pesq_clean"]:
+                results["tp"]["pesq_clean_mean"] = float(np.mean(tp_metrics["pesq_clean"]))
+                results["tp"]["pesq_clean_std"] = float(np.std(tp_metrics["pesq_clean"]))
+            if tp_metrics["stoi_clean"]:
+                results["tp"]["stoi_clean_mean"] = float(np.mean(tp_metrics["stoi_clean"]))
+                results["tp"]["stoi_clean_std"] = float(np.std(tp_metrics["stoi_clean"]))
         if n_ta > 0:
             results["ta"] = {
                 "energy_db_mean": float(np.mean(ta_metrics["energy_db"])),

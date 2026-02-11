@@ -345,6 +345,7 @@ class HiFiTSEDataset(Dataset):
         # 4. Apply RIRs
         target_reverbed = _apply_rir_np(
             target_wav, self.rir_index.get_random())
+        target_wav = target_reverbed  # Use reverbed target for training (see doc/si_sdr_reverb_mismatch_investigation.md)
         interferers_reverbed = [
             _apply_rir_np(iw, self.rir_index.get_random())
             for iw in interferer_wavs
