@@ -62,19 +62,24 @@ def energy_loss(estimate, floor_db=-40.0, eps=1e-8):
 
 
 def amplitude_loss(estimate, target, eps=1e-8):
-    """Penalize RMS ratio deviation from 1.0.
+    """Penalize RMS ratio deviation from 1.0 in log-space.
+
+    Uses log(ratio)^2 so that:
+    - Gradient is exactly zero at ratio=1.0 (no interference when correct)
+    - Stronger penalty than linear-space L2 for large deviations
+    - Symmetric in log-space (0.5x and 2x penalized equally)
 
     Args:
         estimate: (B, L) predicted waveform
         target: (B, L) ground truth waveform
 
     Returns:
-        scalar loss = mean((rms_est / rms_tgt - 1)^2)
+        scalar loss = mean(log(rms_est / rms_tgt)^2)
     """
     rms_est = estimate.pow(2).mean(dim=-1).sqrt()
     rms_tgt = target.pow(2).mean(dim=-1).sqrt().clamp(min=eps)
-    ratio = rms_est / rms_tgt
-    return (ratio - 1.0).pow(2).mean()
+    ratio = (rms_est / rms_tgt).clamp(min=0.05)  # prevent log explosion
+    return torch.log(ratio).pow(2).mean()
 
 
 def l1_waveform_loss(estimate, target):

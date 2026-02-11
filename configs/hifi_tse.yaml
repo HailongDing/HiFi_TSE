@@ -84,10 +84,10 @@ discriminator:
   msd_scales: 3
 
 loss_weights:
-  lambda_sep: 1.0
-  lambda_stft: 5.0             # increased from 1.5: stronger scale anchor
+  lambda_sep: 0.5             # reduced from 1.0: rebalance sep dominance (was 73% of loss)
+  lambda_stft: 5.0             # stronger scale anchor
   lambda_l1: 0.5
-  lambda_amp: 15.0             # NEW: RMS ratio anchor to prevent over-suppression
+  lambda_amp: 20.0             # log-space L2 amplitude loss, increased from 15.0
   lambda_adv: 0.1
   lambda_fm: 2.0
   ta_weight: 0.1
