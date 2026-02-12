@@ -131,4 +131,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0100000.pt
+  resume: null  # Training from scratch after reverb mismatch fix
