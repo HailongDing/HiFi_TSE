@@ -85,23 +85,23 @@ All config changes in one pass:
 
 ### Step 2: `models/usef.py` — Add FiLMLayer class
 - gamma/beta projection from time-pooled speaker embedding (~65K params)
-- Identity init (gamma→1, beta→0) for stable training start
+- **Correct init** (per review): `zeros_(gamma_proj.weight)` + `ones_(gamma_proj.bias)` so `gamma_proj(any_input) = 1`; `zeros_(beta_proj.weight)` + `zeros_(beta_proj.bias)` so `beta_proj(any_input) = 0`. This produces identity transform `1 * z_cond + 0 = z_cond` at init.
 
 ### Step 3: `models/generator.py` — FiLM + conditioning dropout
 - Import and instantiate FiLMLayer, call after USEF
-- Add ref dropout: zero out z_ref per-sample with `ref_dropout_prob` during training
+- **Conditioning dropout scope** (per review): Zero out z_ref before USEF, which disables ALL conditioning paths (USEF cross-attention + reinject layers + FiLM) simultaneously. This is intentionally aggressive — forces the model to learn some separation even without speaker reference, preventing over-reliance on conditioning. Prob=0.1 means 90% of samples still get full conditioning.
 
 ### Step 4: `models/tf_gridnet.py` — Gradient checkpointing
 - `torch.utils.checkpoint.checkpoint` on GridNet blocks when training
 
 ### Step 5: `data/dataset.py` — Speed perturbation
-- torchaudio sox_effects, 0.9x-1.1x on clean speech before mixing
+- **Use scipy.signal.resample** (per review): consistent with existing numpy pipeline, avoids numpy→tensor→sox→numpy overhead. Resample to achieve speed factor, then resample back to original rate.
 
 ### Step 6: `train.py` — Major rewrite
 1. Remove GAN (discriminator, opt_D, sched_D, GAN losses, GAN logging)
 2. Simplify loss to SI-SDR + phase only
-3. Add EMA (AveragedModel, decay=0.999)
-4. Add AMP (bfloat16 autocast, SI-SDR in FP32)
+3. **Add EMA** (per review): Use separate `AveragedModel` instance for validation — no weight swapping needed. Validate with EMA model, save EMA state in checkpoints.
+4. **Add AMP** (per review): bfloat16 autocast for forward pass. SI-SDR computed in FP32 via `autocast(enabled=False)`. PhaseSensitiveLoss uses `register_buffer` for windows (already FP32), and `torch.stft` will use input dtype — ensure estimate/target are cast to float32 before phase loss.
 5. Add min_lr floor in cosine schedule
 6. Update checkpoint save/load (add EMA, remove discriminator)
 7. Simplify to 2 phases (Phase 1: TP-only 0-200K, Phase 2: TP+TA 200K-1.5M)

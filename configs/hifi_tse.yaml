@@ -1,5 +1,5 @@
-# HiFi-TSE Configuration
-# 48kHz Target Speaker Extraction with GAN-based Hi-Fi enhancement
+# HiFi-TSE v2 Configuration
+# 48kHz Target Speaker Extraction — SI-SDRi-focused training (no GAN)
 
 audio:
   sample_rate: 48000
@@ -75,23 +75,16 @@ band_split:
 model:
   feature_dim: 128
   num_gridnet_blocks: 6
-  lstm_hidden: 192
+  lstm_hidden: 256             # v2: scaled from 192 for more capacity (~11.5M params)
   num_heads: 4
-  reinject_at: [0, 2, 4]
-
-discriminator:
-  mpd_periods: [2, 3, 5, 7, 11]
-  msd_scales: 3
+  reinject_at: [0, 1, 2, 3, 4, 5]  # v2: reinject at ALL 6 blocks
+  use_checkpoint: true         # v2: gradient checkpointing for memory savings
+  ref_dropout_prob: 0.1        # v2: conditioning dropout to prevent over-conditioning
 
 loss_weights:
-  lambda_sep: 1.5              # Step 1 rebalance: up from 0.5, sep share 12%→48%
-  lambda_stft: 2.5             # down from 5.0
-  lambda_phase: 1.0            # complex-domain STFT loss (penalizes phase errors)
-  lambda_l1: 0.5
-  lambda_amp: 10.0             # down from 20.0, amp share 81%→48%
-  lambda_adv: 0.1
-  lambda_fm: 2.0
-  ta_weight: 0.1
+  lambda_sep: 1.0              # v2: SI-SDR (dominant)
+  lambda_phase: 0.5            # v2: phase-sensitive STFT (auxiliary)
+  ta_weight: 0.1               # TA energy weight within scene_aware_loss
 
 training:
   batch_size: 2
@@ -99,17 +92,17 @@ training:
   lr: 0.0002
   betas: [0.8, 0.99]
   grad_clip: 5.0
-  total_steps: 500000
-  warmup_steps: 2000    # optimizer steps (not micro-steps)
+  total_steps: 1500000         # v2: extended from 500K
+  warmup_steps: 5000           # v2: increased from 2000 (optimizer steps)
+  min_lr: 1.0e-5               # v2: cosine decay floor
+  ema_decay: 0.999             # v2: EMA of generator weights
   log_interval: 100
   save_interval: 5000
   val_interval: 5000
 
 curriculum:
-  phase1_steps: 100000   # TP only, SI-SDR + STFT
-  phase2_steps: 300000   # add TA, enable Energy loss; GAN starts here
-  gan_d_only_steps: 5000   # D pre-trains before G sees adversarial loss
-  gan_warmup_steps: 20000  # total ramp duration (includes d_only period)
+  phase1_steps: 200000         # v2: TP only, SI-SDR + phase (extended from 100K)
+  phase2_steps: 1500000        # v2: TP + TA, scene-aware SI-SDR + phase (to end)
 
 data:
   clean_speech:
@@ -128,6 +121,7 @@ data:
   dns5_noise_shards: 4             # split dns5_noise into N shards
   hdf5_dir: /data/tse_hdf5
   ta_ratio: 0.2
+  speed_perturb: true            # v2: speed perturbation augmentation (0.9x-1.1x)
   noisy_ref_prob: 0.5
   noisy_ref_ramp_start: 100000   # micro-step to start ramp (prob=0.0 at this step)
   noisy_ref_ramp_end: 150000     # micro-step to reach max (prob=0.5 at this step)
@@ -136,4 +130,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0100000.pt  # Step 1: resume with rebalanced loss weights
+  resume: null  # v2: train from scratch (new architecture)

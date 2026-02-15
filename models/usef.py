@@ -1,11 +1,48 @@
-"""USEF Cross-Multi-Head-Attention conditioning module.
+"""USEF Cross-Multi-Head-Attention conditioning module + FiLM layer.
 
 Computes cross-attention between mixture and reference speaker embeddings
 in the sub-band feature space, enabling noise-robust speaker conditioning.
+FiLMLayer provides complementary feature-wise linear modulation.
 """
 
 import torch
 import torch.nn as nn
+
+
+class FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation from speaker embedding.
+
+    Projects a time-pooled reference embedding to per-band gamma (scale)
+    and beta (shift) vectors, then applies: gamma * z_cond + beta.
+
+    Initialized to identity transform (gamma=1, beta=0) so FiLM has no
+    effect at the start of training.
+    """
+
+    def __init__(self, feature_dim):
+        super().__init__()
+        self.gamma_proj = nn.Linear(feature_dim, feature_dim)
+        self.beta_proj = nn.Linear(feature_dim, feature_dim)
+        # Identity init: gamma_proj(any_input) = 1, beta_proj(any_input) = 0
+        nn.init.zeros_(self.gamma_proj.weight)
+        nn.init.ones_(self.gamma_proj.bias)
+        nn.init.zeros_(self.beta_proj.weight)
+        nn.init.zeros_(self.beta_proj.bias)
+
+    def forward(self, z_cond, z_ref):
+        """
+        Args:
+            z_cond: (B, T, N, D) conditioned mixture features
+            z_ref:  (B, T_ref, N, D) reference features
+
+        Returns:
+            (B, T, N, D) FiLM-modulated features
+        """
+        # Time-pool reference: (B, T_ref, N, D) -> (B, N, D)
+        spk = z_ref.mean(dim=1)
+        gamma = self.gamma_proj(spk).unsqueeze(1)  # (B, 1, N, D)
+        beta = self.beta_proj(spk).unsqueeze(1)     # (B, 1, N, D)
+        return gamma * z_cond + beta
 
 
 class USEFModule(nn.Module):

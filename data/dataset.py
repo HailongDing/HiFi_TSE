@@ -31,7 +31,7 @@ import random
 import h5py
 import numpy as np
 import torch
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, resample
 from torch.utils.data import Dataset
 
 
@@ -96,6 +96,31 @@ def _mix_at_snr_np(signal, noise, snr_db):
     snr_linear = 10.0 ** (snr_db / 10.0)
     scale = np.sqrt(sig_power / (noise_power * snr_linear + 1e-8))
     return signal + scale * noise
+
+
+def _speed_perturb_np(wav, sr, factor_range=(0.9, 1.1)):
+    """Apply random speed perturbation via resampling (numpy/scipy).
+
+    Changes playback speed by resampling: a factor > 1 speeds up (shorter),
+    < 1 slows down (longer). Uses scipy.signal.resample for consistency
+    with the existing numpy-based pipeline.
+
+    Args:
+        wav: (L,) numpy float32 array
+        sr: sample rate (used for factor calculation, not resampling)
+        factor_range: (min_factor, max_factor) speed range
+
+    Returns:
+        (L',) numpy float32 array at modified speed
+    """
+    factor = random.uniform(*factor_range)
+    if abs(factor - 1.0) < 0.01:
+        return wav
+    orig_len = len(wav)
+    new_len = int(round(orig_len / factor))
+    if new_len < 1:
+        return wav
+    return resample(wav, new_len).astype(np.float32)
 
 
 def _peak_normalize_np(wav, target_peak=0.9):
@@ -306,6 +331,7 @@ class HiFiTSEDataset(Dataset):
         self._shared_noisy_ref_prob = mp.Value('d', 0.0)
         self.snr_range = data_cfg["snr_range"]
         self.num_interferers_range = data_cfg["num_interferers_range"]
+        self.speed_perturb = data_cfg.get("speed_perturb", False)
         self.phase = phase
 
         # Build indices (metadata only; HDF5 handles opened lazily)
@@ -345,6 +371,8 @@ class HiFiTSEDataset(Dataset):
         #    Convolve-then-crop: apply RIR to full utterance, then crop to segment
         spk_id, utt_idx = self.clean_index.flat_index[idx]
         target_wav = self.clean_index.get_utterance(spk_id, utt_idx)
+        if self.speed_perturb:
+            target_wav = _speed_perturb_np(target_wav, SAMPLE_RATE)
         target_wav = _peak_normalize_np(target_wav)
         target_wav = _precrop_for_rir_np(target_wav, mix_seg)
         target_wav = _apply_rir_np(target_wav, self.rir_index.get_random())
@@ -365,6 +393,8 @@ class HiFiTSEDataset(Dataset):
                 exclude=exclude_speakers)
             exclude_speakers.add(int_spk)
             int_wav = self.clean_index.get_random_utterance(int_spk)
+            if self.speed_perturb:
+                int_wav = _speed_perturb_np(int_wav, SAMPLE_RATE)
             int_wav = _peak_normalize_np(int_wav)
             int_wav = _precrop_for_rir_np(int_wav, mix_seg)
             int_wav = _apply_rir_np(int_wav, self.rir_index.get_random())

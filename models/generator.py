@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from data.audio_utils import stft
 from models.band_split import BandSplitEncoder, BandMergeDecoder
-from models.usef import USEFModule
+from models.usef import FiLMLayer, USEFModule
 from models.tf_gridnet import TFGridNet
 
 
@@ -42,10 +42,17 @@ class Generator(nn.Module):
         # USEF cross-attention conditioning
         self.usef = USEFModule(feature_dim, num_heads)
 
+        # FiLM conditioning (v2)
+        self.film = FiLMLayer(feature_dim)
+
+        # Conditioning dropout probability (v2)
+        self.ref_dropout_prob = cfg['model'].get('ref_dropout_prob', 0.0)
+
         # TF-GridNet backbone
         reinject_at = cfg['model'].get('reinject_at', [])
+        use_checkpoint = cfg['model'].get('use_checkpoint', False)
         self.gridnet = TFGridNet(feature_dim, lstm_hidden, num_heads, num_blocks,
-                                  reinject_at=reinject_at)
+                                  reinject_at=reinject_at, use_checkpoint=use_checkpoint)
 
         # Band-merge decoder
         self.decoder = BandMergeDecoder(
@@ -72,8 +79,19 @@ class Generator(nn.Module):
         z_mix = self.encoder(mix_spec)  # (B, T_mix, 53, D)
         z_ref = self.encoder(ref_spec)  # (B, T_ref, 53, D)
 
+        # Conditioning dropout (v2): zero out z_ref for random samples during training.
+        # This disables ALL conditioning paths (USEF + reinject + FiLM) simultaneously,
+        # forcing the model to learn some separation without speaker reference.
+        if self.training and self.ref_dropout_prob > 0.0:
+            drop_mask = (torch.rand(z_ref.size(0), 1, 1, 1, device=z_ref.device)
+                         < self.ref_dropout_prob)
+            z_ref = z_ref.masked_fill(drop_mask, 0.0)
+
         # USEF cross-attention conditioning
         z_cond = self.usef(z_mix, z_ref)  # (B, T_mix, 53, D)
+
+        # FiLM modulation (v2)
+        z_cond = self.film(z_cond, z_ref)
 
         # TF-GridNet backbone
         z_out = self.gridnet(z_cond, z_ref=z_ref)  # (B, T_mix, 53, D)

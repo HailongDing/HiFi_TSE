@@ -18,10 +18,11 @@ send_msg() {
         > /dev/null 2>&1
 }
 
-send_msg "**HiFi-TSE Training Started**
+send_msg "**HiFi-TSE v2 Training Started**
 > Host: ${HOSTNAME}
-> Config: batch_size=2, grad_accum=32, lr=0.0002
-> Total steps: 500,000
+> Config: batch_size=2, grad_accum=32, lr=0.0002, lstm_hidden=256
+> Total steps: 1,500,000 (2 phases, no GAN)
+> EMA decay: 0.999, AMP: bfloat16
 > Log: ${LOG_FILE}"
 
 # Wait for log file to appear
@@ -70,12 +71,6 @@ tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
 > ${line}"
     fi
 
-    # GAN stability warning
-    if echo "$line" | grep -q "GAN_WARNING"; then
-        send_msg "**GAN Stability Warning**
-> ${line}"
-    fi
-
     # Early warning: possible over-suppression
     if echo "$line" | grep -q "EARLY_CHECK WARNING"; then
         send_msg "**⚠️ EARLY WARNING: Possible Over-Suppression ⚠️**
@@ -84,12 +79,10 @@ tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
     fi
 
     # Over-suppression detection from training log rms_ratio
-    # Skip TA batches (stft 0.0000 means all-TA batch, not real suppression)
-    if echo "$line" | grep -qE "^step.*rms 0\.([0-2][0-9]|0[0-9])" && \
-       ! echo "$line" | grep -q "stft 0.0000"; then
-        send_msg "**⚠️ Over-Suppression Alert**
+    if echo "$line" | grep -qE "^step.*rms 0\.([0-2][0-9]|0[0-9])"; then
+        send_msg "**Over-Suppression Alert**
 > ${line}
-> rms_ratio < 0.3 detected in training log (non-TA batch)"
+> rms_ratio < 0.3 detected in training log"
     fi
 
     # Step progress (every NOTIFY_INTERVAL steps)

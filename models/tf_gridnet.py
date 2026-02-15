@@ -4,6 +4,7 @@ sub-band BiLSTM, and self-attention on the time-frequency grid.
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 
 class GridNetBlock(nn.Module):
@@ -110,16 +111,18 @@ class TFGridNet(nn.Module):
     """Stack of GridNet blocks forming the TF-GridNet backbone."""
 
     def __init__(self, feature_dim, lstm_hidden, num_heads, num_blocks,
-                 reinject_at=None):
+                 reinject_at=None, use_checkpoint=False):
         """
         Args:
             feature_dim: feature dimension (128)
-            lstm_hidden: LSTM hidden size per direction (192)
+            lstm_hidden: LSTM hidden size per direction (256)
             num_heads: attention heads (4)
             num_blocks: number of GridNet blocks (6)
             reinject_at: list of block indices for speaker re-injection
+            use_checkpoint: enable gradient checkpointing to save memory
         """
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.blocks = nn.ModuleList([
             GridNetBlock(feature_dim, lstm_hidden, num_heads)
             for _ in range(num_blocks)
@@ -142,5 +145,8 @@ class TFGridNet(nn.Module):
         for i, block in enumerate(self.blocks):
             if z_ref is not None and i in self.reinject_at:
                 x = self.reinject_layers[str(i)](x, z_ref)
-            x = block(x)
+            if self.use_checkpoint and self.training:
+                x = grad_checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         return x
