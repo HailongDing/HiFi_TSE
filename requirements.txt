@@ -1,0 +1,8 @@
+torch>=2.0
+torchaudio>=2.0
+numpy
+scipy
+soundfile
+pyyaml
+tensorboard
+h5py

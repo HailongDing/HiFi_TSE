@@ -1,0 +1,139 @@
+# HiFi-TSE Configuration
+# 48kHz Target Speaker Extraction with GAN-based Hi-Fi enhancement
+
+audio:
+  sample_rate: 48000
+  mix_segment_seconds: 4.0        # fixed segment length for mixtures
+  ref_segment_seconds: 4.0        # fixed segment length for references
+  min_utterance_length: 4.0       # skip utterances shorter than this during packing
+
+stft:
+  n_fft: 2048
+  win_length: 960   # 20ms at 48kHz
+  hop_length: 480   # 10ms at 48kHz
+
+# 53 overlapping sub-bands across 1025 frequency bins
+# Region 1 (0-1kHz, bins 0-42): 10 fine bands, width 5-8
+# Region 2 (1-8kHz, bins 43-341): 18 medium bands, width 19-28
+# Region 3 (8-24kHz, bins 342-1024): 25 coarse bands, width 30-36
+band_split:
+  bands:
+    - [0, 4]
+    - [3, 8]
+    - [7, 12]
+    - [11, 16]
+    - [15, 20]
+    - [19, 24]
+    - [23, 28]
+    - [27, 32]
+    - [31, 36]
+    - [35, 42]
+    - [41, 60]
+    - [58, 76]
+    - [74, 92]
+    - [90, 108]
+    - [106, 124]
+    - [122, 140]
+    - [138, 156]
+    - [154, 172]
+    - [170, 188]
+    - [186, 204]
+    - [202, 220]
+    - [218, 236]
+    - [234, 252]
+    - [250, 268]
+    - [266, 284]
+    - [282, 300]
+    - [298, 316]
+    - [314, 341]
+    - [340, 370]
+    - [368, 397]
+    - [395, 424]
+    - [422, 451]
+    - [449, 478]
+    - [476, 505]
+    - [503, 532]
+    - [530, 559]
+    - [557, 586]
+    - [584, 613]
+    - [611, 640]
+    - [638, 667]
+    - [665, 694]
+    - [692, 721]
+    - [719, 748]
+    - [746, 775]
+    - [773, 802]
+    - [800, 829]
+    - [827, 856]
+    - [854, 883]
+    - [881, 910]
+    - [908, 937]
+    - [935, 964]
+    - [962, 991]
+    - [989, 1024]
+
+model:
+  feature_dim: 128
+  num_gridnet_blocks: 6
+  lstm_hidden: 192
+  num_heads: 4
+  reinject_at: [0, 2, 4]
+
+discriminator:
+  mpd_periods: [2, 3, 5, 7, 11]
+  msd_scales: 3
+
+loss_weights:
+  lambda_sep: 1.5              # Step 1 rebalance: up from 0.5, sep share 12%→48%
+  lambda_stft: 2.5             # down from 5.0
+  lambda_phase: 1.0            # complex-domain STFT loss (penalizes phase errors)
+  lambda_l1: 0.5
+  lambda_amp: 10.0             # down from 20.0, amp share 81%→48%
+  lambda_adv: 0.1
+  lambda_fm: 2.0
+  ta_weight: 0.1
+
+training:
+  batch_size: 2
+  grad_accum_steps: 32
+  lr: 0.0002
+  betas: [0.8, 0.99]
+  grad_clip: 5.0
+  total_steps: 500000
+  warmup_steps: 2000    # optimizer steps (not micro-steps)
+  log_interval: 100
+  save_interval: 5000
+  val_interval: 5000
+
+curriculum:
+  phase1_steps: 100000   # TP only, SI-SDR + STFT
+  phase2_steps: 300000   # add TA, enable Energy loss; GAN starts here
+  gan_d_only_steps: 5000   # D pre-trains before G sees adversarial loss
+  gan_warmup_steps: 20000  # total ramp duration (includes d_only period)
+
+data:
+  clean_speech:
+    - /data/48khz_dataset/DNS4_raw/datasets_fullband/clean_fullband/read_speech
+    - /data/48khz_dataset/ears_dataset
+    - /data/48khz_dataset/dns_clean_dataset/vctk_wav48_silence_trimmed
+  noise:
+    demand: /data/48khz_dataset/dns_noise_dataset/demand
+    wham: /data/48khz_dataset/wham_dataset/high_res_wham/audio
+    audioset: /data/48khz_dataset/audioset_dataset/audio
+    dns5_noise: /data/48khz_dataset/dns_noise_dataset/dns5_noise
+  rir:
+    slr26: /data/48khz_dataset/DNS4_RIRs/datasets_fullband/impulse_responses/SLR26/simulated_rirs_48k
+    slr28: /data/48khz_dataset/DNS4_RIRs/datasets_fullband/impulse_responses/SLR28/RIRS_NOISES/real_rirs_isotropic_noises
+  val_split_ratio: 0.05            # 5% of speakers held out for validation
+  dns5_noise_shards: 4             # split dns5_noise into N shards
+  hdf5_dir: /data/tse_hdf5
+  ta_ratio: 0.2
+  noisy_ref_prob: 0.5
+  noisy_ref_ramp_start: 100000   # micro-step to start ramp (prob=0.0 at this step)
+  noisy_ref_ramp_end: 150000     # micro-step to reach max (prob=0.5 at this step)
+  num_interferers_range: [1, 3]
+  snr_range: [-5, 15]
+
+checkpoint:
+  dir: ./checkpoints
+  resume: ./checkpoints/checkpoint_0100000.pt  # Step 1: resume with rebalanced loss weights
