@@ -132,8 +132,12 @@ def load_checkpoint(path, generator, opt_G, sched_G, device,
     return ckpt["step"], best_val_loss, patience_counter
 
 
-def validate(model, val_loader, device, writer, step, use_amp=False, amp_dtype=torch.bfloat16):
-    """Run validation and log decomposed metrics."""
+def validate(model, val_loader, device, writer, step, ta_weight=0.1,
+             use_amp=False, amp_dtype=torch.bfloat16):
+    """Run validation and log decomposed metrics.
+
+    Returns (avg_loss, avg_si_sdr) — avg_si_sdr is used for best model selection.
+    """
     model.eval()
     total_loss = 0.0
     total_si_sdr = 0.0
@@ -151,7 +155,8 @@ def validate(model, val_loader, device, writer, step, use_amp=False, amp_dtype=t
                 est_wav = model(mix_wav, ref_wav)
             est_wav = est_wav.float()
             target_wav = target_wav.float()
-            loss = scene_aware_loss(est_wav, target_wav, tp_flag)
+            loss = scene_aware_loss(est_wav, target_wav, tp_flag,
+                                    ta_weight=ta_weight)
             total_loss += loss.item()
 
             # Decomposed metrics
@@ -192,7 +197,7 @@ def validate(model, val_loader, device, writer, step, use_amp=False, amp_dtype=t
             writer.add_scalar("val/ta_energy", avg_ta_energy, step)
 
     model.train()
-    return avg_loss
+    return avg_loss, avg_si_sdr
 
 
 def mini_evaluate(model, val_loader, device, step, use_amp=False, amp_dtype=torch.bfloat16):
@@ -368,6 +373,7 @@ def main():
     # ---- Resume ----
     start_step = 0
     best_val_loss = None
+    best_val_si_sdr = None  # TP-only SI-SDR for best model selection
     patience_counter = 0
     resume_path = cfg["checkpoint"].get("resume")
     if resume_path and os.path.exists(resume_path):
@@ -523,14 +529,15 @@ def main():
 
         # ---- Validation (using EMA model) + best model tracking ----
         if step > 0 and step % val_interval == 0:
-            val_loss = validate(ema_generator, val_loader, device, writer, step,
-                                use_amp=use_amp, amp_dtype=amp_dtype)
+            val_loss, val_si_sdr = validate(
+                ema_generator, val_loader, device, writer, step,
+                ta_weight=ta_weight, use_amp=use_amp, amp_dtype=amp_dtype)
 
-            # Best model tracking (active in phase 2)
+            # Best model tracking by TP-only SI-SDR (higher is better)
             early_stop_patience = 20  # stop after 20 validations without improvement
             if current_phase >= 2:
-                if best_val_loss is None or val_loss < best_val_loss:
-                    best_val_loss = val_loss
+                if best_val_si_sdr is None or val_si_sdr > best_val_si_sdr:
+                    best_val_si_sdr = val_si_sdr
                     patience_counter = 0
                     best_path = os.path.join(ckpt_dir, "checkpoint_best.pt")
                     save_checkpoint(best_path, step, generator, opt_G, sched_G,
@@ -538,13 +545,13 @@ def main():
                                     best_val_loss=best_val_loss,
                                     patience_counter=patience_counter,
                                     keep_last=999)
-                    print("  -> New best model, saved checkpoint_best.pt")
+                    print("  -> New best SI-SDR ({:.2f} dB), saved checkpoint_best.pt".format(val_si_sdr))
                 else:
                     patience_counter += 1
-                    print("  -> No improvement for {}/{} evals".format(
-                        patience_counter, early_stop_patience))
+                    print("  -> No SI-SDR improvement for {}/{} evals (best: {:.2f} dB)".format(
+                        patience_counter, early_stop_patience, best_val_si_sdr))
                     if patience_counter >= early_stop_patience:
-                        print("Early stopping triggered. Best val loss: {:.4f}".format(best_val_loss))
+                        print("Early stopping triggered. Best val SI-SDR: {:.2f} dB".format(best_val_si_sdr))
                         break
 
         # ---- Milestone evaluation (using EMA model) ----

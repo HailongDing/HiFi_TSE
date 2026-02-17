@@ -43,22 +43,25 @@ def si_sdr_loss(estimate, target):
     return -si_sdr(estimate, target).mean()
 
 
-def energy_loss(estimate, floor_db=-40.0, eps=1e-8):
+def energy_loss(estimate, target_db=-30.0, eps=1e-8):
     """Energy loss for target-absent samples.
 
-    Forces output energy toward zero with a floor to prevent unbounded
-    suppression gradients on shared model layers.
+    Penalizes output energy above target_db. Once energy is suppressed to
+    the target threshold, gradient stops — preventing over-suppression of
+    shared model weights that also serve TP samples.
+
+    Returns relu(energy_db - target_db), which is always >= 0.
 
     Args:
         estimate: (B, L) predicted waveform
-        floor_db: minimum energy in dB (gradient stops below this)
+        target_db: suppression target in dB (gradient stops below this)
 
     Returns:
-        (B,) energy values in dB, clamped at floor_db
+        (B,) non-negative loss values (0 when sufficiently suppressed)
     """
     energy = estimate.pow(2).mean(dim=-1)
     energy_db = 10.0 * torch.log10(energy + eps)
-    return energy_db.clamp(min=floor_db)
+    return torch.relu(energy_db - target_db)
 
 
 def amplitude_loss(estimate, target, eps=1e-8):

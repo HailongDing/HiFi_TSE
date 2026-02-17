@@ -130,4 +130,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: null  # v2: train from scratch (new architecture)
+  resume: ./checkpoints/checkpoint_0200000.pt  # resume from step 200K (pre-suppression fix)
