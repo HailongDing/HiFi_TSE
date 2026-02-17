@@ -84,6 +84,7 @@ model:
 loss_weights:
   lambda_sep: 1.0              # v2: SI-SDR (dominant)
   lambda_phase: 0.5            # v2: phase-sensitive STFT (auxiliary)
+  lambda_amp: 1.0              # v2: amplitude anchor for TP (log-RMS ratio MSE)
   ta_weight: 0.1               # TA energy weight within scene_aware_loss
 
 training:
@@ -130,4 +131,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0200000.pt  # resume from step 200K (pre-suppression fix)
+  resume: ./checkpoints/checkpoint_0245000.pt  # resume with amplitude_loss fix

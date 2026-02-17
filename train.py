@@ -35,7 +35,7 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 
 from data.dataset import HiFiTSEDataset, tse_collate_fn
-from losses.separation import scene_aware_loss, si_sdr, si_sdr_loss
+from losses.separation import amplitude_loss, scene_aware_loss, si_sdr, si_sdr_loss
 from losses.stft_loss import PhaseSensitiveLoss
 from models.generator import Generator
 
@@ -480,6 +480,22 @@ def main():
 
         loss_G = loss_w["lambda_sep"] * loss_sep + loss_w.get("lambda_phase", 0.5) * loss_phase
 
+        # Amplitude loss for TP samples (anchor RMS ratio near 1.0)
+        lambda_amp = loss_w.get("lambda_amp", 0.0)
+        if lambda_amp > 0:
+            if current_phase == 1:
+                loss_amp = amplitude_loss(est_wav_fp32, target_wav_fp32)
+            else:
+                tp_mask_amp = tp_flag.bool()
+                if tp_mask_amp.any():
+                    loss_amp = amplitude_loss(est_wav_fp32[tp_mask_amp],
+                                              target_wav_fp32[tp_mask_amp])
+                else:
+                    loss_amp = torch.tensor(0.0, device=device)
+            loss_G = loss_G + lambda_amp * loss_amp
+        else:
+            loss_amp = torch.tensor(0.0, device=device)
+
         # ---- Backward ----
         (loss_G / grad_accum).backward()
 
@@ -502,14 +518,15 @@ def main():
         if step % log_interval == 0:
             rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             print("step {:>7d} | phase {} | loss_G {:.4f} | sep {:.4f}"
-                  " | phase_l {:.4f} | rms {:.2f}"
+                  " | phase_l {:.4f} | amp_l {:.4f} | rms {:.2f}"
                   " | lr {:.2e} | rss {:.0f}MB | {:.2f}s".format(
                       step, current_phase, loss_G.item(), loss_sep.item(),
-                      loss_phase.item(), rms_ratio,
+                      loss_phase.item(), loss_amp.item(), rms_ratio,
                       sched_G.get_last_lr()[0], rss_mb, dt))
             writer.add_scalar("train/loss_G", loss_G.item(), step)
             writer.add_scalar("train/loss_sep", loss_sep.item(), step)
             writer.add_scalar("train/loss_phase", loss_phase.item(), step)
+            writer.add_scalar("train/loss_amp", loss_amp.item(), step)
             writer.add_scalar("train/rms_ratio", rms_ratio, step)
             writer.add_scalar("train/lr", sched_G.get_last_lr()[0], step)
             writer.add_scalar("data/noisy_ref_prob", current_noisy_ref_prob, step)

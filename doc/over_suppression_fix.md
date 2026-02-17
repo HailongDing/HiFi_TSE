@@ -73,3 +73,81 @@ The Phase 1 checkpoint (step 200K) was saved before over-suppression began. Resu
 2. Early check at step 205K: rms_ratio should stay > 0.8 (vs 1.265 in broken run)
 3. Monitor: TA energy should stabilize around -30 dB and stop dropping
 4. Watch: SI-SDR should improve without rms_ratio collapse
+
+---
+
+## Continued Over-Suppression (Step 200K–245K) — Amplitude Loss Fix
+
+### Problem
+
+After Changes 1–4 were applied (commit `6766f72`) and training resumed from step 200K, rms_ratio declined again:
+
+| Val step | SI-SDR | rms_ratio | ta_energy |
+|----------|--------|-----------|-----------|
+| 200K (resume) | -3.87 dB | 1.180 | -23.8 dB |
+| 210K | -3.67 dB | 1.038 | -25.5 dB |
+| 225K (best) | -2.88 dB | 0.906 | -29.3 dB |
+| 235K | -2.98 dB | 0.738 | -28.6 dB |
+| 240K | -4.12 dB | 0.752 | -30.7 dB |
+
+The relu fix eliminated the negative-loss exploit, but rms_ratio still drifts from 1.18 → 0.738. The over-suppression pattern recurs, just more slowly.
+
+### Root Cause
+
+Three compounding factors with **insufficient countermeasure** (PhaseSensitiveLoss is scale-sensitive but too weak to anchor amplitude alone):
+
+1. **energy_loss saturates to zero** once TA output < -30 dB (relu clamps to 0). After saturation, TA samples contribute **zero gradient** — no resistance to further suppression.
+
+2. **SI-SDR is scale-invariant** — it zero-means both estimate and target, then computes a ratio. A signal scaled to 0.5x has the exact same SI-SDR. There is **no amplitude anchor** for TP samples anywhere in the current loss.
+
+3. **Shared model weights** learn a suppressive prior from TA training that bleeds into TP outputs, systematically reducing output amplitude.
+
+### Fix: Change 5 — Add `amplitude_loss` for TP samples
+
+An `amplitude_loss` function **already exists** in `losses/separation.py:67-85` but was never used:
+
+```python
+def amplitude_loss(estimate, target, eps=1e-8):
+    rms_est = estimate.pow(2).mean(dim=-1).sqrt()
+    rms_tgt = target.pow(2).mean(dim=-1).sqrt().clamp(min=eps)
+    ratio = (rms_est / rms_tgt).clamp(min=0.05)
+    return torch.log(ratio).pow(2).mean()
+```
+
+Properties:
+- Zero gradient at ratio=1.0 (no interference when amplitude is correct)
+- Symmetric in log-space (0.5x and 2.0x penalized equally)
+- Self-correcting: gradient diminishes as ratio approaches 1.0
+- At current rms_ratio=0.738: loss = log(0.738)^2 = 0.092
+
+Applied to **TP samples only** (all samples in Phase 1, tp_flag-masked in Phase 2).
+
+Config: `lambda_amp: 1.0` — conservative. At ratio=0.738 this adds ~0.092 to loss_G, about 2-3% of typical loss_sep magnitude. Large enough for clear gradient signal, small enough not to disrupt SI-SDR optimization.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `train.py` | Import `amplitude_loss`, compute for TP samples, add to `loss_G`, add `amp_l` logging + TensorBoard |
+| `configs/hifi_tse.yaml` | Add `lambda_amp: 1.0` to loss_weights, resume from `checkpoint_0245000.pt` |
+
+### Resume Strategy
+
+Resume from step 245K (not rollback to 200K):
+- SI-SDR improved during 200K–245K despite amplitude drift
+- amplitude_loss will directly correct the amplitude without undoing separation quality
+- Use `--reset-optimizer` to clear Adam momentum shaped by the suppressed-amplitude regime
+
+### Codex Review
+
+- Root cause confirmed. Notes PhaseSensitiveLoss already provides some scale-sensitive signal for TP, but too weak to prevent drift — amplitude_loss is a more targeted anchor.
+- lambda_amp=1.0 is conservative; may need tuning upward if recovery is too slow.
+- Risks: ratio clamp at 0.05 creates zero-gradient zone below 5% (not an issue at current 0.738). Low-energy TP targets could spike log-ratio — mitigated by existing `rms_tgt.clamp(min=eps)`.
+- Must guard with `tp_flag.any()` to avoid empty-tensor issues (already planned).
+
+### Verification
+
+1. After 500 steps: rms_ratio should start increasing from ~0.68
+2. After 5K steps: loss_amp should decrease, rms_ratio trending toward 0.9+
+3. After 20K steps: rms_ratio should stabilize between 0.9–1.1
+4. SI-SDR should not degrade (amplitude_loss has zero gradient at ratio=1.0)
