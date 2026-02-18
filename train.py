@@ -320,6 +320,8 @@ def main():
     parser.add_argument("--config", type=str, default="configs/hifi_tse.yaml")
     parser.add_argument("--reset-optimizer", action="store_true",
                         help="Reset Adam state when resuming")
+    parser.add_argument("--reset-patience", action="store_true",
+                        help="Reset best_val_si_sdr and patience counter when resuming")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -407,6 +409,10 @@ def main():
             ema_generator=ema_generator,
             reset_optimizer=args.reset_optimizer,
         )
+        if args.reset_patience:
+            best_val_si_sdr = None
+            patience_counter = 0
+            print("  Patience counter and best_val_si_sdr RESET")
         print("Resumed at step {} (best_val_loss={}, best_val_si_sdr={}, patience={})".format(
             start_step, best_val_loss, best_val_si_sdr, patience_counter))
 

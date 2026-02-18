@@ -131,4 +131,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0495000.pt  # resume with stable validation
+  resume: ./checkpoints/checkpoint_0540000.pt  # resume after false early stop
