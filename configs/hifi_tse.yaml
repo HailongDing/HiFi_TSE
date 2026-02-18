@@ -131,4 +131,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0245000.pt  # resume with amplitude_loss fix
+  resume: ./checkpoints/checkpoint_0435000.pt  # resume after server reboot

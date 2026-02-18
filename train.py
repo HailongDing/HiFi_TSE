@@ -75,7 +75,8 @@ def _step_from_filename(fname):
 
 def save_checkpoint(path, step, generator, opt_G, sched_G,
                     ema_generator=None, best_val_loss=None,
-                    patience_counter=0, keep_last=5, protected_steps=None):
+                    best_val_si_sdr=None, patience_counter=0,
+                    keep_last=5, protected_steps=None):
     """Save training checkpoint and remove old ones beyond keep_last."""
     ckpt_dir = os.path.dirname(path)
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -85,6 +86,7 @@ def save_checkpoint(path, step, generator, opt_G, sched_G,
         "opt_G": opt_G.state_dict(),
         "sched_G": sched_G.state_dict(),
         "best_val_loss": best_val_loss,
+        "best_val_si_sdr": best_val_si_sdr,
         "patience_counter": patience_counter,
     }
     if ema_generator is not None:
@@ -109,7 +111,7 @@ def save_checkpoint(path, step, generator, opt_G, sched_G,
 
 def load_checkpoint(path, generator, opt_G, sched_G, device,
                     ema_generator=None, reset_optimizer=False):
-    """Load training checkpoint. Returns (step, best_val_loss, patience_counter)."""
+    """Load training checkpoint. Returns (step, best_val_loss, best_val_si_sdr, patience_counter)."""
     ckpt = torch.load(path, map_location=device)
     generator.load_state_dict(ckpt["generator"])
     if ema_generator is not None:
@@ -128,8 +130,9 @@ def load_checkpoint(path, generator, opt_G, sched_G, device,
         opt_G.load_state_dict(ckpt["opt_G"])
         sched_G.load_state_dict(ckpt["sched_G"])
     best_val_loss = ckpt.get("best_val_loss", None)
+    best_val_si_sdr = ckpt.get("best_val_si_sdr", None)
     patience_counter = ckpt.get("patience_counter", 0)
-    return ckpt["step"], best_val_loss, patience_counter
+    return ckpt["step"], best_val_loss, best_val_si_sdr, patience_counter
 
 
 def validate(model, val_loader, device, writer, step, ta_weight=0.1,
@@ -378,13 +381,13 @@ def main():
     resume_path = cfg["checkpoint"].get("resume")
     if resume_path and os.path.exists(resume_path):
         print("Resuming from", resume_path)
-        start_step, best_val_loss, patience_counter = load_checkpoint(
+        start_step, best_val_loss, best_val_si_sdr, patience_counter = load_checkpoint(
             resume_path, generator, opt_G, sched_G, device,
             ema_generator=ema_generator,
             reset_optimizer=args.reset_optimizer,
         )
-        print("Resumed at step {} (best_val_loss={}, patience={})".format(
-            start_step, best_val_loss, patience_counter))
+        print("Resumed at step {} (best_val_loss={}, best_val_si_sdr={}, patience={})".format(
+            start_step, best_val_loss, best_val_si_sdr, patience_counter))
 
     # ---- Curriculum config ----
     phase1_steps = cfg["curriculum"]["phase1_steps"]
@@ -540,6 +543,7 @@ def main():
             save_checkpoint(ckpt_path, step, generator, opt_G, sched_G,
                             ema_generator=ema_generator,
                             best_val_loss=best_val_loss,
+                            best_val_si_sdr=best_val_si_sdr,
                             patience_counter=patience_counter,
                             protected_steps=PROTECTED_STEPS)
             print("Saved checkpoint:", ckpt_path)
@@ -560,6 +564,7 @@ def main():
                     save_checkpoint(best_path, step, generator, opt_G, sched_G,
                                     ema_generator=ema_generator,
                                     best_val_loss=best_val_loss,
+                                    best_val_si_sdr=best_val_si_sdr,
                                     patience_counter=patience_counter,
                                     keep_last=999)
                     print("  -> New best SI-SDR ({:.2f} dB), saved checkpoint_best.pt".format(val_si_sdr))
@@ -583,6 +588,7 @@ def main():
     save_checkpoint(final_path, total_steps, generator, opt_G, sched_G,
                     ema_generator=ema_generator,
                     best_val_loss=best_val_loss,
+                    best_val_si_sdr=best_val_si_sdr,
                     patience_counter=patience_counter)
     print("Training complete. Final checkpoint:", final_path)
     writer.close()
