@@ -136,12 +136,26 @@ def load_checkpoint(path, generator, opt_G, sched_G, device,
 
 
 def validate(model, val_loader, device, writer, step, ta_weight=0.1,
-             use_amp=False, amp_dtype=torch.bfloat16):
+             use_amp=False, amp_dtype=torch.bfloat16,
+             max_batches=200, seed=42):
     """Run validation and log decomposed metrics.
 
     Returns (avg_loss, avg_si_sdr) — avg_si_sdr is used for best model selection.
+    Uses a fixed seed for reproducible dynamic mixing across evaluations.
     """
     model.eval()
+
+    # Save RNG states and set fixed seed for deterministic validation
+    rng_state_py = random.getstate()
+    rng_state_np = np.random.get_state()
+    rng_state_torch = torch.random.get_rng_state()
+    rng_state_cuda = torch.cuda.get_rng_state(device) if torch.cuda.is_available() else None
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+
     total_loss = 0.0
     total_si_sdr = 0.0
     total_rms_num = 0.0
@@ -181,8 +195,15 @@ def validate(model, val_loader, device, writer, step, ta_weight=0.1,
                 ta_batches += 1
 
             count += 1
-            if count >= 50:
+            if count >= max_batches:
                 break
+
+    # Restore RNG states so training randomness is unaffected
+    random.setstate(rng_state_py)
+    np.random.set_state(rng_state_np)
+    torch.random.set_rng_state(rng_state_torch)
+    if rng_state_cuda is not None:
+        torch.cuda.set_rng_state(rng_state_cuda, device)
 
     avg_loss = total_loss / max(count, 1)
     avg_si_sdr = total_si_sdr / max(tp_samples, 1)

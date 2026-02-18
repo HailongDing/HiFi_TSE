@@ -131,4 +131,4 @@ data:
 
 checkpoint:
   dir: ./checkpoints
-  resume: ./checkpoints/checkpoint_0435000.pt  # resume after server reboot
+  resume: ./checkpoints/checkpoint_0495000.pt  # resume with stable validation

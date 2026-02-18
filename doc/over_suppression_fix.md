@@ -151,3 +151,43 @@ Resume from step 245K (not rollback to 200K):
 2. After 5K steps: loss_amp should decrease, rms_ratio trending toward 0.9+
 3. After 20K steps: rms_ratio should stabilize between 0.9–1.1
 4. SI-SDR should not degrade (amplitude_loss has zero gradient at ratio=1.0)
+
+---
+
+## Validation Stabilization Fix (Step ~495K)
+
+### Problem
+
+Validation SI-SDR has extremely high variance: swings from -1.97 to -4.96 dB between consecutive evaluations (5K steps apart). This causes:
+- Unreliable best model selection (best checkpoint may be a lucky roll, not genuinely best)
+- Early stopping patience counter oscillates instead of giving a clear signal
+- Difficult to assess whether training is actually improving
+
+### Root Cause
+
+Two compounding factors in `validate()` (`train.py:138-202`):
+
+1. **Only 50 batches** (line 184: `if count >= 50: break`). With batch_size=2, that's ~100 samples. ~80 TP samples for SI-SDR, ~20 TA samples. Far too few — standard practice is 500-2000+ samples.
+
+2. **Non-deterministic dynamic mixing**. The val dataset is `HiFiTSEDataset(cfg, phase=2)` — same class as training, generating random mixtures on the fly each time. Every validation sees completely different speakers, noise, SNR, and TA/TP splits. This adds random noise on top of the already small sample size.
+
+### Fix: Change 6
+
+Two changes to `train.py`:
+
+1. **Increase validation batches from 50 to 200** — 400 samples total (~320 TP, ~80 TA). 4x more samples reduces standard error by ~2x. Adds ~30-45s per validation (every 5K steps = negligible overhead).
+
+2. **Fix random seed for validation** — seed Python `random`, `numpy`, and `torch` at the start of each `validate()` call with a fixed seed. This ensures the same mixtures are generated every validation, making metrics directly comparable across evaluations. Reset RNG state after validation to avoid affecting training randomness.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `train.py` | In `validate()`: save RNG states, set fixed seed, increase batch cap to 200, restore RNG states after |
+
+### Expected Impact
+
+- SI-SDR variance between consecutive validations should drop from ~3 dB to ~1 dB or less
+- Best model selection becomes meaningful — genuine improvements, not noise
+- Early stopping patience counter gives a reliable signal
+- No impact on training (RNG states restored after validation)
