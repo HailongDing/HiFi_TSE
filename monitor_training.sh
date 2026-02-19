@@ -79,7 +79,8 @@ tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
     fi
 
     # Over-suppression detection from training log rms_ratio
-    if echo "$line" | grep -qE "^step.*rms 0\.([0-2][0-9]|0[0-9])"; then
+    # Exclude rms 0.00 which is expected for all-TA batches (no TP samples to measure)
+    if echo "$line" | grep -qE "^step.*rms 0\.(0[1-9]|[1-2][0-9])"; then
         send_msg "**Over-Suppression Alert**
 > ${line}
 > rms_ratio < 0.3 detected in training log"

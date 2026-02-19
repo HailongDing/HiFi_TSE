@@ -191,3 +191,46 @@ Two changes to `train.py`:
 - Best model selection becomes meaningful — genuine improvements, not noise
 - Early stopping patience counter gives a reliable signal
 - No impact on training (RNG states restored after validation)
+
+---
+
+## GPU Utilization Fix — Data Loading Bottleneck (Step ~704K)
+
+### Problem
+
+GPU utilization oscillates between 97-99% and 0% during training. 20-second sampling shows periodic drops to 0% lasting 1-2 seconds — classic data loading starvation. The GPU is starved of batches while CPU workers prepare the next batch.
+
+### Root Cause
+
+CPU-bound `__getitem__` in `data/dataset.py` can't keep up with the GPU. Each sample requires:
+- 2-5 `scipy.signal.fftconvolve` calls on arrays of ~288K samples (target + 1-3 interferers + optional noisy ref)
+- Up to 4 `scipy.signal.resample` calls for speed perturbation (FFT-based, O(N log N) on ~288K samples)
+
+Compounded by DataLoader config issues:
+- `persistent_workers=False` (default) — workers killed and respawned every epoch, losing HDF5 handles
+- `num_workers=4` — insufficient given heavy per-sample CPU cost
+- `prefetch_factor=2` (default) — shallow prefetch buffer
+- `batch_size=2` with `grad_accum_steps=32` — 32 DataLoader fetches per optimizer step
+
+### Fix: Stage 1 — Infrastructure only (zero risk to training output)
+
+#### Change 7: DataLoader config (`train.py:make_train_loader`)
+- `persistent_workers=True` — keeps workers alive, HDF5 handles persist across epochs
+- `num_workers` 4 → 8 — 32 CPU cores available; 8 workers doubles CPU parallelism
+- `prefetch_factor` 2 → 4 — deeper prefetch buffer absorbs worker latency variance
+
+#### Change 8: Prevent thread oversubscription (`train.py:_worker_init_fn`)
+- Set `OMP_NUM_THREADS=1` and `MKL_NUM_THREADS=1` via `os.environ` in worker init
+- Without this, each worker's scipy/numpy FFT calls spawn multiple OpenMP threads, causing 8 workers × N threads to fight over 32 cores
+
+These changes are purely infrastructure — identical computation, just faster delivery. No algorithm or data pipeline changes.
+
+### Deferred to Stage 2 (only if Stage 1 insufficient)
+- Replace `scipy.signal.resample` with `torchaudio.functional.resample` (faster but different filter)
+- Replace `scipy.signal.fftconvolve` with `scipy.signal.oaconvolve` (same math, different rounding)
+- Increase batch_size 2→4, reduce grad_accum 32→16 (changes micro-batch dynamics)
+
+### Verification
+- Monitor GPU utilization with `nvidia-smi -l 1` — expect fewer/no 0% drops
+- Confirm step timing improves (currently ~0.25s/step)
+- Verify validation metrics remain identical (pure infrastructure change)

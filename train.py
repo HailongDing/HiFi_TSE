@@ -49,6 +49,8 @@ def infinite_loader(loader):
 
 def _worker_init_fn(worker_id):
     """Seed each DataLoader worker independently to avoid correlated augmentations."""
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
     seed = torch.initial_seed() % 2**32 + worker_id
     random.seed(seed)
     np.random.seed(seed)
@@ -58,9 +60,11 @@ def make_train_loader(dataset, batch_size):
     """Create a DataLoader for training (recreated at phase transitions)."""
     return DataLoader(
         dataset, batch_size=batch_size,
-        num_workers=4, pin_memory=True, shuffle=True, drop_last=True,
+        num_workers=8, pin_memory=True, shuffle=True, drop_last=True,
         collate_fn=tse_collate_fn,
         worker_init_fn=_worker_init_fn,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
 
 
