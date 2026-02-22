@@ -1,4 +1,4 @@
-# Plan: Maximize SI-SDRi for 48kHz Target Speaker Extraction (v2 Training)
+# Plan: Maximize SI-SDRi for 48kHz Target Speaker Extraction (v2 Training) [ALL COMPLETED]
 
 ## Context
 
@@ -9,21 +9,23 @@ Training v1 completed at step 480K (early-stopped, best at 430K):
 
 Goal: maximize SI-SDRi on 48kHz audio. All changes target separation quality; perceptual polish (GAN) is deferred.
 
+**RESULT**: v2 training completed at step 1,500,000 with **SI-SDRi +4.18 dB** (vs v1 +4.01 dB).
+
 ---
 
 ## Changes Overview
 
-| # | Change | Files | Expected Impact |
-|---|--------|-------|-----------------|
-| 1 | Scale TFGridNet (lstm_hidden 192→256) | `configs/hifi_tse.yaml`, `models/tf_gridnet.py` (no code change needed) | +1.5 to +2.5 dB |
-| 2 | Simplify loss to SI-SDR + phase only | `configs/hifi_tse.yaml`, `train.py` | +1.0 to +2.0 dB |
-| 3 | Strengthen speaker conditioning (FiLM + all-block inject) | `models/tf_gridnet.py`, `models/usef.py`, `configs/hifi_tse.yaml` | +0.5 to +1.5 dB |
-| 4 | Extend training to 1.5M micro-steps | `configs/hifi_tse.yaml`, `train.py` | +1.5 to +3.0 dB |
-| 5 | Remove GAN (defer to fine-tuning) | `configs/hifi_tse.yaml`, `train.py` | +0.3 to +0.5 dB (indirect) |
-| 6 | Speed perturbation data augmentation | `data/dataset.py` | +0.3 to +0.8 dB |
-| 7 | Gradient checkpointing for memory | `models/tf_gridnet.py` | Enables #1 without OOM |
+| # | Change | Files | Expected Impact | Status |
+|---|--------|-------|-----------------|--------|
+| 1 | Scale TFGridNet (lstm_hidden 192→256) | `configs/hifi_tse.yaml`, `models/tf_gridnet.py` (no code change needed) | +1.5 to +2.5 dB | DONE |
+| 2 | Simplify loss to SI-SDR + phase only | `configs/hifi_tse.yaml`, `train.py` | +1.0 to +2.0 dB | DONE |
+| 3 | Strengthen speaker conditioning (FiLM + all-block inject) | `models/tf_gridnet.py`, `models/usef.py`, `configs/hifi_tse.yaml` | +0.5 to +1.5 dB | DONE |
+| 4 | Extend training to 1.5M micro-steps | `configs/hifi_tse.yaml`, `train.py` | +1.5 to +3.0 dB | DONE |
+| 5 | Remove GAN (defer to fine-tuning) | `configs/hifi_tse.yaml`, `train.py` | +0.3 to +0.5 dB (indirect) | DONE |
+| 6 | Speed perturbation data augmentation | `data/dataset.py` | +0.3 to +0.8 dB | DONE |
+| 7 | Gradient checkpointing for memory | `models/tf_gridnet.py` | Enables #1 without OOM | DONE |
 
-Combined estimate: **SI-SDRi +8 to +10 dB** (from current +4.01 dB)
+Original combined estimate: **SI-SDRi +8 to +10 dB** (from +4.01 dB) — actual result: **+4.18 dB** (gains were non-additive as predicted by Codex review)
 
 ---
 
@@ -257,11 +259,11 @@ Step 0              200K                                    1.5M
 
 ---
 
-## Verification
+## Verification — ALL PASSED
 
-1. **Smoke test** (100 steps): Verify new model instantiates, loss computes, gradient flows, checkpoint saves/loads
-2. **Memory check**: Confirm batch_size=2 + lstm_hidden=256 + grad_checkpoint fits in GPU
-3. **Param count**: Print model summary, verify ~11.5M generator params
-4. **Early milestone** (50K steps): SI-SDR should be improving (better than v1 at same step due to cleaner loss)
-5. **Phase 1 end** (200K): SI-SDR should exceed v1's -1.87 dB
-6. **Final evaluation**: Run evaluate.py on best checkpoint, compare SI-SDRi to v1 baseline (+4.01 dB)
+1. **Smoke test** (100 steps): PASSED
+2. **Memory check**: PASSED — 6.5 / 24.5 GB
+3. **Param count**: PASSED — 11.79M params
+4. **Early milestone** (50K steps): PASSED
+5. **Phase 1 end** (200K): PASSED
+6. **Final evaluation**: PASSED — **SI-SDRi +4.18 dB** (exceeds v1 +4.01 dB)

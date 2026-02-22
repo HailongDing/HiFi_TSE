@@ -63,7 +63,7 @@ def make_train_loader(dataset, batch_size):
         num_workers=8, pin_memory=True, shuffle=True, drop_last=True,
         collate_fn=tse_collate_fn,
         worker_init_fn=_worker_init_fn,
-        persistent_workers=True,
+        persistent_workers=False,
         prefetch_factor=4,
     )
 

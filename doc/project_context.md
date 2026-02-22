@@ -2,6 +2,21 @@
 
 This document provides all necessary background for resuming work on the HiFi-TSE v2 project in a new Claude Code session.
 
+## CURRENT STATUS: v2 Training COMPLETE (Feb 22, 2026)
+
+All 11 implementation changes done. Training finished at step 1,500,000.
+
+| Metric | v1 | v2 |
+|--------|----|----|
+| SI-SDRi | +4.01 dB | **+4.18 dB** |
+| SI-SDR | -1.87 dB | **-1.71 dB** |
+| PESQ | 1.15 | 1.14 |
+| STOI | 0.488 | 0.489 |
+| TA suppression | 11.2 dB | 11.4 dB |
+| Model params | 7.8M | 11.79M |
+
+See `doc/performance_improvement_plan.md` for next-step improvements.
+
 ---
 
 ## 1. Project Background
@@ -259,52 +274,63 @@ v2/
 ├── requirements.txt            # Python dependencies
 ├── .gitignore
 └── doc/
-    ├── improvement_plan.md     # Detailed v2 improvement plan (7 changes)
-    └── project_context.md      # This file
+    ├── improvement_plan.md          # Original v2 improvement plan (7 changes) [COMPLETED]
+    ├── implementation_plan.md       # Full implementation plan (11 changes) [COMPLETED]
+    ├── another_review.md            # Codex review of implementation plan [ADDRESSED]
+    ├── over_suppression_fix.md      # Training fixes (changes 1-8) [COMPLETED]
+    ├── future_improvements.md       # Early improvement ideas (partially superseded)
+    ├── performance_improvement_plan.md  # Next-step improvements for v3/fine-tuning
+    └── project_context.md           # This file
 ```
 
-### Key Model Parameters (v1 -> v2 planned)
-| Parameter | v1 | v2 (planned) |
+### Key Model Parameters (v1 -> v2)
+| Parameter | v1 | v2 (IMPLEMENTED) |
 |-----------|-----|------|
 | feature_dim | 128 | 128 |
 | lstm_hidden | 192 | **256** |
 | num_gridnet_blocks | 6 | 6 |
 | num_heads | 4 | 4 |
 | reinject_at | [0, 2, 4] | **[0, 1, 2, 3, 4, 5]** |
-| FiLM conditioning | N/A | **New** |
+| FiLM conditioning | N/A | **Added** |
 | Gradient checkpointing | No | **Yes** |
-| Generator params | 7.8M | **~11.5M** |
+| Generator params | 7.8M | **11.79M** |
 | Discriminator | 70.7M (active) | **Removed from training** |
 
 ---
 
-## 7. Implementation Checklist for v2
+## 7. Implementation Checklist for v2 — ALL COMPLETED
 
-These are the code changes needed (see `improvement_plan.md` for details):
+- [x] `configs/hifi_tse.yaml` — Updated all config values (lstm_hidden, loss weights, phases, etc.)
+- [x] `models/usef.py` — Added FiLMLayer class
+- [x] `models/generator.py` — Instantiated and called FiLMLayer after USEF
+- [x] `models/tf_gridnet.py` — Added gradient checkpointing support
+- [x] `train.py` — Simplified loss (remove STFT/L1/amp), removed GAN, updated logging
+- [x] `data/dataset.py` — Added speed perturbation augmentation
+- [x] `monitor_training.sh` — Simplified (no GAN warnings needed)
+- [x] Smoke test (100 steps) — PASSED
+- [x] Memory check (batch_size=2 + lstm_hidden=256 + grad_checkpoint) — PASSED (6.5/24.5 GB)
+- [x] Full training completed (1,500,000 steps)
+- [x] Evaluation completed (SI-SDRi +4.18 dB)
 
-- [ ] `configs/hifi_tse.yaml` — Update all config values (lstm_hidden, loss weights, phases, etc.)
-- [ ] `models/usef.py` — Add FiLMLayer class
-- [ ] `models/generator.py` — Instantiate and call FiLMLayer after USEF
-- [ ] `models/tf_gridnet.py` — Add gradient checkpointing support
-- [ ] `train.py` — Simplify loss (remove STFT/L1/amp), remove GAN, update logging
-- [ ] `data/dataset.py` — Add speed perturbation augmentation
-- [ ] `monitor_training.sh` — Simplify (no GAN warnings needed)
-- [ ] Smoke test (100 steps)
-- [ ] Memory check (batch_size=2 + lstm_hidden=256 + grad_checkpoint)
-- [ ] Start full training in tmux
-- [ ] Start monitoring in tmux
+### Additional fixes applied during training:
+- [x] energy_loss relu fix (over-suppression)
+- [x] amplitude_loss for TP samples (over-suppression)
+- [x] Validation stabilization (200 batches, fixed seed)
+- [x] GPU utilization fix (8 workers, OMP_NUM_THREADS=1)
+- [x] NVIDIA driver fix (uvm_disable_hmm=1)
+- [x] h5py crash mitigation (persistent_workers=False)
 
 ---
 
 ## 8. Resuming in a New Claude Code Session
 
-When starting a new Claude Code session in `/home/hailong/code/from_draft/v2/`, provide this context:
+When starting a new Claude Code session in `/home/hailong/code/from_draft/v2/`:
 
 1. Read `doc/project_context.md` (this file) for full background
-2. Read `doc/improvement_plan.md` for the specific changes to implement
-3. The source code in v2 is a copy of v1 — it needs the 7 changes applied
-4. Train from scratch (no checkpoint resume) after implementing changes
-5. Use conda env `USEF-TFGridNet` for all training/inference
-6. Use tmux sessions `train` and `monitor` for long-running processes
-7. Target metric: **SI-SDRi** (Scale-Invariant Signal-to-Distortion Ratio improvement)
-8. v1 baseline to beat: SI-SDRi +4.01 dB
+2. v2 training is COMPLETE — all 11 changes implemented, 1.5M steps trained
+3. Final result: SI-SDRi +4.18 dB (vs v1 baseline +4.01 dB)
+4. Best checkpoint: `checkpoints/checkpoint_best.pt` (step 1,495,000)
+5. Final checkpoint: `checkpoints/checkpoint_final.pt` (step 1,500,000)
+6. See `doc/performance_improvement_plan.md` for next improvement methods
+7. Use conda env `USEF-TFGridNet` for all training/inference
+8. Use tmux sessions `train` and `monitor` for long-running processes

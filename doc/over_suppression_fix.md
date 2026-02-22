@@ -1,4 +1,4 @@
-# Over-Suppression Fix — Phase 2 Training (Step 200K-230K)
+# Over-Suppression Fix — Phase 2 Training (Step 200K-230K) [ALL COMPLETED]
 
 ## Problem
 
@@ -34,9 +34,9 @@ The floor clamp at -40 dB means the optimizer can extract up to `-4.0` of free l
 - Resume from 200K is safest (pre-dates bad gradients)
 - Bug found: `validate()` calls `scene_aware_loss` without `ta_weight`, using function default 0.2 instead of config's 0.1 — should fix for consistency
 
-## Fix: 4 Changes
+## Fix: 4 Changes [ALL COMPLETED]
 
-### Change 1: Fix `energy_loss` to be non-negative (`losses/separation.py:46-61`)
+### Change 1: Fix `energy_loss` to be non-negative (`losses/separation.py:46-61`) [COMPLETED]
 
 Replace the raw dB return with a thresholded positive loss:
 
@@ -55,15 +55,15 @@ Behavior:
 
 This eliminates the negative loss contribution. TA loss is always >= 0.
 
-### Change 2: Use TP-only SI-SDR for best model selection (`train.py:525-548`)
+### Change 2: Use TP-only SI-SDR for best model selection (`train.py:525-548`) [COMPLETED]
 
 Currently `val_loss` (scene_aware_loss including TA term) is used for best checkpoint. Replace with TP-only validation SI-SDR as the selection metric (higher is better).
 
-### Change 3: Fix validation ta_weight consistency (`train.py:154`)
+### Change 3: Fix validation ta_weight consistency (`train.py:154`) [COMPLETED]
 
 `validate()` calls `scene_aware_loss(est_wav, target_wav, tp_flag)` without passing `ta_weight`, so it uses function default 0.2 instead of config's 0.1. Pass `ta_weight` explicitly.
 
-### Change 4: Resume from step 200K checkpoint (`configs/hifi_tse.yaml`)
+### Change 4: Resume from step 200K checkpoint (`configs/hifi_tse.yaml`) [COMPLETED]
 
 The Phase 1 checkpoint (step 200K) was saved before over-suppression began. Resume from it with the fixed loss, using `--reset-optimizer` to clear contaminated Adam momentum.
 
@@ -102,7 +102,7 @@ Three compounding factors with **insufficient countermeasure** (PhaseSensitiveLo
 
 3. **Shared model weights** learn a suppressive prior from TA training that bleeds into TP outputs, systematically reducing output amplitude.
 
-### Fix: Change 5 — Add `amplitude_loss` for TP samples
+### Fix: Change 5 — Add `amplitude_loss` for TP samples [COMPLETED]
 
 An `amplitude_loss` function **already exists** in `losses/separation.py:67-85` but was never used:
 
@@ -154,7 +154,7 @@ Resume from step 245K (not rollback to 200K):
 
 ---
 
-## Validation Stabilization Fix (Step ~495K)
+## Validation Stabilization Fix (Step ~495K) [COMPLETED]
 
 ### Problem
 
@@ -171,7 +171,7 @@ Two compounding factors in `validate()` (`train.py:138-202`):
 
 2. **Non-deterministic dynamic mixing**. The val dataset is `HiFiTSEDataset(cfg, phase=2)` — same class as training, generating random mixtures on the fly each time. Every validation sees completely different speakers, noise, SNR, and TA/TP splits. This adds random noise on top of the already small sample size.
 
-### Fix: Change 6
+### Fix: Change 6 [COMPLETED]
 
 Two changes to `train.py`:
 
@@ -194,7 +194,7 @@ Two changes to `train.py`:
 
 ---
 
-## GPU Utilization Fix — Data Loading Bottleneck (Step ~704K)
+## GPU Utilization Fix — Data Loading Bottleneck (Step ~704K) [COMPLETED]
 
 ### Problem
 
@@ -212,14 +212,14 @@ Compounded by DataLoader config issues:
 - `prefetch_factor=2` (default) — shallow prefetch buffer
 - `batch_size=2` with `grad_accum_steps=32` — 32 DataLoader fetches per optimizer step
 
-### Fix: Stage 1 — Infrastructure only (zero risk to training output)
+### Fix: Stage 1 — Infrastructure only (zero risk to training output) [COMPLETED]
 
-#### Change 7: DataLoader config (`train.py:make_train_loader`)
+#### Change 7: DataLoader config (`train.py:make_train_loader`) [COMPLETED]
 - `persistent_workers=True` — keeps workers alive, HDF5 handles persist across epochs
 - `num_workers` 4 → 8 — 32 CPU cores available; 8 workers doubles CPU parallelism
 - `prefetch_factor` 2 → 4 — deeper prefetch buffer absorbs worker latency variance
 
-#### Change 8: Prevent thread oversubscription (`train.py:_worker_init_fn`)
+#### Change 8: Prevent thread oversubscription (`train.py:_worker_init_fn`) [COMPLETED]
 - Set `OMP_NUM_THREADS=1` and `MKL_NUM_THREADS=1` via `os.environ` in worker init
 - Without this, each worker's scipy/numpy FFT calls spawn multiple OpenMP threads, causing 8 workers × N threads to fight over 32 cores
 
@@ -234,3 +234,31 @@ These changes are purely infrastructure — identical computation, just faster d
 - Monitor GPU utilization with `nvidia-smi -l 1` — expect fewer/no 0% drops
 - Confirm step timing improves (currently ~0.25s/step)
 - Verify validation metrics remain identical (pure infrastructure change)
+
+### Post-Implementation Note
+
+`persistent_workers=True` caused `free(): invalid pointer` crash at step 1,215,700 due to
+h5py memory corruption from long-lived file handles. Reverted to `persistent_workers=False`.
+Also tried `multiprocessing_context="forkserver"` but all workers segfaulted immediately —
+incompatible with h5py/scipy on Python 3.8. Final config: `persistent_workers=False`,
+`num_workers=8`, `prefetch_factor=4`, `OMP_NUM_THREADS=1`. GPU utilization remained
+83-99% with no 0% drops.
+
+### NVIDIA Driver Fix [COMPLETED]
+
+nvidia_uvm crash with HMM enabled caused server reboots. Fixed with
+`uvm_disable_hmm=1` module parameter. No reboots since.
+
+---
+
+## Final Training Outcome
+
+Training completed at step 1,500,000 (Feb 22, 2026). All fixes above contributed to
+stable training from step ~1,225K to completion with no crashes (~275K steps).
+
+**Final evaluation results** (checkpoint_best.pt, step 1,495,000):
+- **SI-SDRi: +4.18 dB** (vs v1 baseline +4.01 dB)
+- SI-SDR: -1.71 dB (std 5.33)
+- PESQ: 1.14 (std 0.13)
+- STOI: 0.489 (std 0.162)
+- TA suppression: -31.2 dB output energy (11.4 dB suppression)

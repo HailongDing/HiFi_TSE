@@ -1,8 +1,8 @@
-# Implementation Plan: HiFi-TSE v2 (11 Changes)
+# Implementation Plan: HiFi-TSE v2 (11 Changes) [ALL COMPLETED]
 
 ## Context
 
-HiFi-TSE v1 achieved SI-SDRi +4.01 dB at 48kHz with 7.8M params. The v2 codebase is a copy of v1 source code with no changes applied yet. The goal is to implement 7 planned improvements (from `improvement_plan.md`) plus 4 additional improvements identified during Codex o3 review, then train from scratch.
+HiFi-TSE v1 achieved SI-SDRi +4.01 dB at 48kHz with 7.8M params. The v2 codebase is a copy of v1 source code with all 11 changes implemented. Training completed at step 1,500,000 with **SI-SDRi +4.18 dB**.
 
 ### Codex o3 Review Summary
 
@@ -26,26 +26,26 @@ HiFi-TSE v1 achieved SI-SDRi +4.01 dB at 48kHz with 7.8M params. The v2 codebase
 
 ## All 11 Changes
 
-### Original 7 Changes (from improvement_plan.md)
+### Original 7 Changes (from improvement_plan.md) — ALL COMPLETED
 
-| # | Change | Files |
-|---|--------|-------|
-| 1 | Scale TFGridNet: lstm_hidden 192→256 (~7.8M→~11.5M params) | `configs/hifi_tse.yaml` |
-| 2 | Simplify loss: keep SI-SDR + phase only, remove STFT/L1/amp/GAN losses | `configs/hifi_tse.yaml`, `train.py` |
-| 3 | Strengthen speaker conditioning: FiLM + reinject at all 6 blocks | `models/usef.py`, `models/generator.py`, `configs/hifi_tse.yaml` |
-| 4 | Extend training: 500K→1.5M micro-steps, 2 phases (no GAN phase) | `configs/hifi_tse.yaml`, `train.py` |
-| 5 | Remove GAN from training loop (defer to fine-tuning) | `configs/hifi_tse.yaml`, `train.py` |
-| 6 | Speed perturbation augmentation (0.9x-1.1x) | `data/dataset.py` |
-| 7 | Gradient checkpointing on TFGridNet blocks | `models/tf_gridnet.py`, `configs/hifi_tse.yaml` |
+| # | Change | Files | Status |
+|---|--------|-------|--------|
+| 1 | Scale TFGridNet: lstm_hidden 192→256 (~7.8M→~11.5M params) | `configs/hifi_tse.yaml` | DONE |
+| 2 | Simplify loss: keep SI-SDR + phase only, remove STFT/L1/amp/GAN losses | `configs/hifi_tse.yaml`, `train.py` | DONE |
+| 3 | Strengthen speaker conditioning: FiLM + reinject at all 6 blocks | `models/usef.py`, `models/generator.py`, `configs/hifi_tse.yaml` | DONE |
+| 4 | Extend training: 500K→1.5M micro-steps, 2 phases (no GAN phase) | `configs/hifi_tse.yaml`, `train.py` | DONE |
+| 5 | Remove GAN from training loop (defer to fine-tuning) | `configs/hifi_tse.yaml`, `train.py` | DONE |
+| 6 | Speed perturbation augmentation (0.9x-1.1x) | `data/dataset.py` | DONE |
+| 7 | Gradient checkpointing on TFGridNet blocks | `models/tf_gridnet.py`, `configs/hifi_tse.yaml` | DONE |
 
-### 4 Additional Changes (from Codex review)
+### 4 Additional Changes (from Codex review) — ALL COMPLETED
 
-| # | Change | Files | Rationale |
-|---|--------|-------|-----------|
-| 8 | EMA of generator weights (decay=0.999) | `train.py` | Smoother val/checkpoint weights for 1.5M-step run |
-| 9 | Mixed precision (bfloat16, SI-SDR in FP32) | `train.py` | ~30% faster training; SI-SDR log10/ratio ops need FP32 |
-| 10 | min_lr floor (1e-5) in cosine schedule | `train.py`, `configs/hifi_tse.yaml` | Prevents LR hitting zero too early in 3x longer run |
-| 11 | Conditioning dropout (ref_dropout_prob=0.1) | `models/generator.py`, `configs/hifi_tse.yaml` | Prevents over-conditioning from FiLM + all-block reinject |
+| # | Change | Files | Status |
+|---|--------|-------|--------|
+| 8 | EMA of generator weights (decay=0.999) | `train.py` | DONE |
+| 9 | Mixed precision (bfloat16, SI-SDR in FP32) | `train.py` | DONE |
+| 10 | min_lr floor (1e-5) in cosine schedule | `train.py`, `configs/hifi_tse.yaml` | DONE |
+| 11 | Conditioning dropout (ref_dropout_prob=0.1) | `models/generator.py`, `configs/hifi_tse.yaml` | DONE |
 
 ---
 
@@ -129,10 +129,22 @@ All config changes in one pass:
 
 ---
 
-## Verification
+## Verification — ALL PASSED
 
-1. **Smoke test (100 steps)**: Model instantiates, loss decreasing, no OOM, checkpoint round-trips
-2. **Param count**: Verify ~11.5M generator params (no discriminator)
-3. **Memory check**: batch_size=2 + lstm_hidden=256 + grad_checkpoint fits in 24GB RTX 4090
-4. **Early milestone (50K steps)**: SI-SDR improving, EMA val loss tracking
-5. **Final evaluation**: evaluate.py on best EMA checkpoint, target SI-SDRi > +4.01 dB
+1. **Smoke test (100 steps)**: PASSED — Model instantiates, loss decreasing, no OOM, checkpoint round-trips
+2. **Param count**: PASSED — 11.79M generator params
+3. **Memory check**: PASSED — 6.5 / 24.5 GB GPU memory
+4. **Early milestone (50K steps)**: PASSED — SI-SDR improving
+5. **Final evaluation**: PASSED — SI-SDRi **+4.18 dB** (exceeds v1 baseline +4.01 dB)
+
+## Final Results (Step 1,500,000)
+
+| Metric | v1 | v2 |
+|--------|----|----|
+| SI-SDRi | +4.01 dB | **+4.18 dB** |
+| SI-SDR | -1.87 dB | **-1.71 dB** |
+| PESQ | 1.15 | 1.14 |
+| STOI | 0.488 | 0.489 |
+| TA suppression | 11.2 dB | **11.4 dB** |
+| Model params | 7.8M | 11.79M |
+| Training steps | 480K | 1,500K |
